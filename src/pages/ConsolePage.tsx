@@ -22,7 +22,6 @@ import { WavRenderer } from '../utils/wav_renderer';
 import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
 import { Button } from '../components/button/Button';
 import { Toggle } from '../components/toggle/Toggle';
-import { Map } from '../components/Map';
 
 import './ConsolePage.scss';
 import { isJsxOpeningLikeElement } from 'typescript';
@@ -54,18 +53,21 @@ interface RealtimeEvent {
   event: { [key: string]: any };
 }
 
+// 定义参数类型
+interface MemoryParams {
+  key: string;
+  value: string;
+}
+
 export function ConsolePage() {
   /**
    * Ask user for API Key
    * If we're using the local relay server, we don't need this
    */
-  const apiKey = LOCAL_RELAY_SERVER_URL
-    ? ''
-    : localStorage.getItem('tmp::voice_api_key') ||
-      prompt('OpenAI API Key') ||
-      '';
-  if (apiKey !== '') {
-    localStorage.setItem('tmp::voice_api_key', apiKey);
+  const apiKey = process.env.REACT_APP_OPENAI_API_KEY || '';
+
+  if (!LOCAL_RELAY_SERVER_URL && !apiKey) {
+    console.error('OpenAI API Key is required. Please set it in the .env file.');
   }
 
   /**
@@ -116,14 +118,12 @@ export function ConsolePage() {
     [key: string]: boolean;
   }>({});
   const [isConnected, setIsConnected] = useState(false);
-  const [canPushToTalk, setCanPushToTalk] = useState(true);
+  const [canPushToTalk, setCanPushToTalk] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [memoryKv, setMemoryKv] = useState<{ [key: string]: any }>({});
-  const [coords, setCoords] = useState<Coordinates | null>({
-    lat: 37.775593,
-    lng: -122.418137,
-  });
-  const [marker, setMarker] = useState<Coordinates | null>(null);
+  const recorderInitializedRef = useRef(false);
+  const [isVoiceMode, setIsVoiceMode] = useState(true);
+
+  const toolAddedRef = useRef(false);
 
   /**
    * Utility for formatting the timing of logs
@@ -147,76 +147,118 @@ export function ConsolePage() {
   }, []);
 
   /**
-   * When you click the API key
-   */
-  const resetAPIKey = useCallback(() => {
-    const apiKey = prompt('OpenAI API Key');
-    if (apiKey !== null) {
-      localStorage.clear();
-      localStorage.setItem('tmp::voice_api_key', apiKey);
-      window.location.reload();
-    }
-  }, []);
-
-  /**
    * Connect to conversation:
    * WavRecorder taks speech input, WavStreamPlayer output, client is API client
    */
   const connectConversation = useCallback(async () => {
     const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
-    // Set state variables
-    startTimeRef.current = new Date().toISOString();
-    setIsConnected(true);
-    setRealtimeEvents([]);
-    setItems(client.conversation.getItems());
+    console.log('Connecting to Realtime API...');
 
-    // Connect to microphone
-    await wavRecorder.begin();
+    try {
+      // Connect to audio output
+      await wavStreamPlayer.connect();
 
-    // Connect to audio output
-    await wavStreamPlayer.connect();
+      // Connect to Realtime API
+      await client.connect();
+      console.log('Connected to Realtime API successfully.');
 
-    // Connect to realtime API
-    await client.connect();
-    client.sendUserMessageContent([
-      {
-        type: `input_text`,
-        text: `Hello!`,
-        // text: `For testing purposes, I want you to list ten car brands. Number each item, e.g. "one (or whatever number you are one): the item name".`
-      },
-    ]);
+      // Now that we're connected, set state variables
+      startTimeRef.current = new Date().toISOString();
+      setIsConnected(true);
+      setRealtimeEvents([]);
+      setItems(client.conversation.getItems());
 
-    if (client.getTurnDetectionType() === 'server_vad') {
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
+      // 如果语音模式已经开启，开始录音
+      if (isVoiceMode) {
+        const wavRecorder = wavRecorderRef.current;
+        if (wavRecorder.getStatus() === 'ended') {
+          await wavRecorder.begin();
+        }
+        await wavRecorder.record((data) => handleAudioInput(data));
+      }
+
+      client.sendUserMessageContent([
+        {
+          type: `input_text`,
+          text: `你好！`,
+        },
+      ]);
+    } catch (error) {
+      console.error('Failed to connect to Realtime API:', error);
+    }
+  }, [isVoiceMode]);
+
+  const handleAudioInput = useCallback((data: { mono: Int16Array; raw: Int16Array }) => {
+    const client = clientRef.current;
+    try {
+      if (client.realtime?.isConnected()) {
+        client.appendInputAudio(data.mono);
+        console.log('Audio data sent:', data.mono.length);
+      } else {
+        console.warn('Client is not connected. Audio data not sent.');
+      }
+    } catch (error) {
+      console.error('Error appending input audio:', error);
     }
   }, []);
+
+  /**
+   * In push-to-talk mode, stop recording
+   */
+  const stopRecording = async () => {
+    const client = clientRef.current;
+    const wavRecorder = wavRecorderRef.current;
+
+    try {
+      if (wavRecorder.getStatus() === 'recording') {
+        console.log('Stopping recording...');
+        // Check if client is connected before pausing
+        const isClientConnected = client.realtime?.isConnected();
+        if (isClientConnected) {
+          await wavRecorder.pause();
+        } else {
+          console.warn('Client is not connected. Skipping wavRecorder.pause().');
+        }
+        setIsRecording(false);
+        recorderInitializedRef.current = false;
+        console.log('Recording stopped successfully.');
+      } else {
+        console.warn('Recorder is not recording. No need to stop.');
+      }
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+    }
+  };
 
   /**
    * Disconnect and reset conversation state
    */
   const disconnectConversation = useCallback(async () => {
+    // First, stop recording if necessary
+    if (isRecording) {
+      await stopRecording();
+    }
+
+    setIsVoiceMode(false);
     setIsConnected(false);
     setRealtimeEvents([]);
     setItems([]);
-    setMemoryKv({});
-    setCoords({
-      lat: 37.775593,
-      lng: -122.418137,
-    });
-    setMarker(null);
 
     const client = clientRef.current;
+
+    // Now disconnect the client
     client.disconnect();
 
     const wavRecorder = wavRecorderRef.current;
-    await wavRecorder.end();
+    if (wavRecorder.getStatus() !== 'ended') {
+      await wavRecorder.end();
+    }
 
     const wavStreamPlayer = wavStreamPlayerRef.current;
     await wavStreamPlayer.interrupt();
-  }, []);
+  }, [isRecording, stopRecording]);
 
   const deleteConversationItem = useCallback(async (id: string) => {
     const client = clientRef.current;
@@ -228,27 +270,35 @@ export function ConsolePage() {
    * .appendInputAudio() for each sample
    */
   const startRecording = async () => {
-    setIsRecording(true);
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
-    const wavStreamPlayer = wavStreamPlayerRef.current;
-    const trackSampleOffset = await wavStreamPlayer.interrupt();
-    if (trackSampleOffset?.trackId) {
-      const { trackId, offset } = trackSampleOffset;
-      await client.cancelResponse(trackId, offset);
-    }
-    await wavRecorder.record((data) => client.appendInputAudio(data.mono));
-  };
 
-  /**
-   * In push-to-talk mode, stop recording
-   */
-  const stopRecording = async () => {
-    setIsRecording(false);
-    const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
-    await wavRecorder.pause();
-    client.createResponse();
+    if (!client.isConnected()) {
+      console.warn('Client is not connected. Cannot start recording.');
+      return;
+    }
+
+    if (recorderInitializedRef.current) {
+      console.warn('Recorder is already initialized.');
+      return;
+    }
+
+    try {
+      console.log('Recorder status before starting:', wavRecorder.getStatus());
+
+      if (wavRecorder.getStatus() === 'ended') {
+        await wavRecorder.begin();
+      }
+
+      console.log('Starting recording...');
+      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
+
+      setIsRecording(true);
+      recorderInitializedRef.current = true;
+      console.log('Recording started successfully.');
+    } catch (error) {
+      console.error('Error starting recording:', error);
+    }
   };
 
   /**
@@ -257,15 +307,11 @@ export function ConsolePage() {
   const changeTurnEndType = async (value: string) => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
-    if (value === 'none' && wavRecorder.getStatus() === 'recording') {
-      await wavRecorder.pause();
-    }
+
     client.updateSession({
       turn_detection: value === 'none' ? null : { type: 'server_vad' },
     });
-    if (value === 'server_vad' && client.isConnected()) {
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
-    }
+
     setCanPushToTalk(value === 'none');
   };
 
@@ -372,133 +418,230 @@ export function ConsolePage() {
    * Set all of our instructions, tools, events and more
    */
   useEffect(() => {
-    // Get refs
-    const wavStreamPlayer = wavStreamPlayerRef.current;
     const client = clientRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
 
-    // Set instructions
-    client.updateSession({ instructions: instructions });
-    // Set transcription, otherwise we don't get user transcriptions back
-    client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
-
-    // Add tools
-    client.addTool(
-      {
-        name: 'set_memory',
-        description: 'Saves important data about the user into memory.',
-        parameters: {
-          type: 'object',
-          properties: {
-            key: {
-              type: 'string',
-              description:
-                'The key of the memory value. Always use lowercase and underscores, no other characters.',
-            },
-            value: {
-              type: 'string',
-              description: 'Value can be anything represented as a string',
-            },
-          },
-          required: ['key', 'value'],
-        },
-      },
-      async ({ key, value }: { [key: string]: any }) => {
-        setMemoryKv((memoryKv) => {
-          const newKv = { ...memoryKv };
-          newKv[key] = value;
-          return newKv;
-        });
-        return { ok: true };
-      }
-    );
-    client.addTool(
-      {
-        name: 'get_weather',
-        description:
-          'Retrieves the weather for a given lat, lng coordinate pair. Specify a label for the location.',
-        parameters: {
-          type: 'object',
-          properties: {
-            lat: {
-              type: 'number',
-              description: 'Latitude',
-            },
-            lng: {
-              type: 'number',
-              description: 'Longitude',
-            },
-            location: {
-              type: 'string',
-              description: 'Name of the location',
-            },
-          },
-          required: ['lat', 'lng', 'location'],
-        },
-      },
-      async ({ lat, lng, location }: { [key: string]: any }) => {
-        setMarker({ lat, lng, location });
-        setCoords({ lat, lng, location });
-        const result = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,wind_speed_10m`
-        );
-        const json = await result.json();
-        const temperature = {
-          value: json.current.temperature_2m as number,
-          units: json.current_units.temperature_2m as string,
-        };
-        const wind_speed = {
-          value: json.current.wind_speed_10m as number,
-          units: json.current_units.wind_speed_10m as string,
-        };
-        setMarker({ lat, lng, location, temperature, wind_speed });
-        return json;
-      }
-    );
-
-    // handle realtime events from client + server for event logging
-    client.on('realtime.event', (realtimeEvent: RealtimeEvent) => {
-      setRealtimeEvents((realtimeEvents) => {
-        const lastEvent = realtimeEvents[realtimeEvents.length - 1];
-        if (lastEvent?.event.type === realtimeEvent.event.type) {
-          // if we receive multiple events in a row, aggregate them for display purposes
-          lastEvent.count = (lastEvent.count || 0) + 1;
-          return realtimeEvents.slice(0, -1).concat(lastEvent);
-        } else {
-          return realtimeEvents.concat(realtimeEvent);
-        }
+    if (!toolAddedRef.current) {
+      client.updateSession({
+        instructions: instructions,
+        input_audio_transcription: { model: 'whisper-1' },
+        turn_detection: { type: 'server_vad' },
+        voice: 'alloy',
+        output_audio_format: 'pcm16',
       });
-    });
-    client.on('error', (event: any) => console.error(event));
-    client.on('conversation.interrupted', async () => {
+
+      client.addTool(
+        {
+          name: 'set_memory',
+          description: 'Saves important data about the user into memory.',
+          parameters: {
+            type: 'object',
+            properties: {
+              key: {
+                type: 'string',
+                description:
+                  'The key of the memory value. Always use lowercase and underscores, no other characters.',
+              },
+              value: {
+                type: 'string',
+                description: 'Value can be anything represented as a string',
+              },
+            },
+            required: ['key', 'value'],
+          },
+        },
+        async ({ key, value }: MemoryParams) => {
+          console.log(`Memory updated: ${key} = ${value}`);
+          return { ok: true };
+        }
+      );
+
+      client.addTool(
+        {
+          name: 'search_wikipedia',
+          description: '在维基百科上搜索给定的查询并返回摘要',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: '要搜索的关键词或短语。',
+              },
+            },
+            required: ['query'],
+          },
+        },
+        async ({ query }: { query: string }) => {
+          try {
+            const response = await fetch(
+              `https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`
+            );
+            if (response.ok) {
+              const data = await response.json();
+              if (data.extract) {
+                return { summary: data.extract };
+              } else {
+                return { summary: `抱歉，我在维基百科中找不到与"${query}"相关的信息。` };
+              }
+            } else {
+              return { summary: `抱歉，我无法访问维基百科。` };
+            }
+          } catch (error) {
+            return { summary: `抱歉，搜索时出现错误。` };
+          }
+        }
+      );
+
+      toolAddedRef.current = true;
+    }
+
+    // 监听会话更新事件
+    const conversationUpdateHandler = ({ item, delta }: any) => {
+      console.log('Conversation updated:', item, delta);
+      
+      // 如果助手的回复包含音频数据
+      if (item.role === 'assistant' && delta && delta.audio) {
+        console.log('Received assistant audio delta:', delta.audio);
+
+        // 将音频数据传递给 wavStreamPlayer
+        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+      }
+
+      setItems(client.conversation.getItems());
+    };
+
+    // 监听 conversation.interrupted 事件，处理中断
+    const conversationInterruptedHandler = async () => {
+      console.log('Conversation interrupted by user speaking.');
+
+      // 中断助手的音频播放
       const trackSampleOffset = await wavStreamPlayer.interrupt();
       if (trackSampleOffset?.trackId) {
         const { trackId, offset } = trackSampleOffset;
         await client.cancelResponse(trackId, offset);
       }
-    });
-    client.on('conversation.updated', async ({ item, delta }: any) => {
-      const items = client.conversation.getItems();
-      if (delta?.audio) {
-        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
-      }
-      if (item.status === 'completed' && item.formatted.audio?.length) {
-        const wavFile = await WavRecorder.decode(
-          item.formatted.audio,
-          24000,
-          24000
-        );
-        item.formatted.file = wavFile;
-      }
-      setItems(items);
-    });
+    };
 
-    setItems(client.conversation.getItems());
+    // 添加事件监听器
+    const eventHandler = (event: any) => {
+      console.log('Received event:', event);
+      setRealtimeEvents((prevEvents) => {
+        const newEvents = [
+          ...prevEvents,
+          {
+            time: new Date().toISOString(),
+            source: 'server' as const,
+            event,
+          },
+        ];
+        console.log('Updated realtimeEvents:', newEvents);
+        return newEvents;
+      });
+    };
 
+    client.on('conversation.updated', conversationUpdateHandler);
+    client.on('conversation.interrupted', conversationInterruptedHandler);
+    client.on('event', eventHandler);
+
+    // 在组件卸载时移除监听器和工具
     return () => {
-      // cleanup; resets to defaults
-      client.reset();
+      client.off('conversation.updated', conversationUpdateHandler);
+      client.off('conversation.interrupted', conversationInterruptedHandler);
+      client.off('event', eventHandler);
+      client.removeTool('set_memory');
+      client.removeTool('search_wikipedia');
     };
   }, []);
+
+  // 添加用户交互后激活音频上下文的代码
+  useEffect(() => {
+    const handleUserInteraction = async () => {
+      const wavStreamPlayer = wavStreamPlayerRef.current;
+      if (wavStreamPlayer.context && wavStreamPlayer.context.state === 'suspended') {
+        await wavStreamPlayer.context.resume();
+        console.log('Audio context resumed');
+      }
+    };
+
+    document.addEventListener('click', handleUserInteraction);
+
+    return () => {
+      document.removeEventListener('click', handleUserInteraction);
+    };
+  }, []);
+
+  useEffect(() => {
+    const client = clientRef.current;
+    const wavRecorder = wavRecorderRef.current;
+
+    const handleAudioInput = (data: { mono: Int16Array; raw: Int16Array }) => {
+      try {
+        const isClientConnected = client.realtime?.isConnected();
+        if (isClientConnected) {
+          client.appendInputAudio(data.mono);
+        } else {
+          console.warn('Client is not connected. Audio data not sent.');
+        }
+      } catch (error) {
+        console.error('Error appending input audio:', error);
+      }
+    };
+
+    if (isConnected && isVoiceMode && !isRecording) {
+      startRecording();
+    } else if (!isVoiceMode || !isConnected) {
+      stopRecording();
+    }
+
+    return () => {
+      // 清理逻辑（如果需要）
+    };
+  }, [isConnected, isVoiceMode, isRecording]);
+
+  useEffect(() => {
+    const client = clientRef.current;
+
+    client.updateSession({
+      instructions: instructions,
+      input_audio_transcription: { model: 'whisper-1' },
+      turn_detection: { type: 'server_vad' },
+    });
+
+    // 添加事件监听器
+    const eventHandler = (event: any) => {
+      console.log('Received event:', event);
+      setRealtimeEvents((prevEvents) => {
+        const newEvents = [
+          ...prevEvents,
+          {
+            time: new Date().toISOString(),
+            source: 'server' as const,
+            event,
+          },
+        ];
+        console.log('Updated realtimeEvents:', newEvents);
+        return newEvents;
+      });
+    };
+
+    const conversationUpdateHandler = ({ item, delta }: any) => {
+      console.log('Conversation updated:', item, delta);
+      setItems(client.conversation.getItems());
+    };
+
+    client.on('event', eventHandler);
+    client.on('conversation.updated', conversationUpdateHandler);
+
+    // 自动连接
+    connectConversation();
+
+    // 在组件卸载时断开连接和移除监听器
+    return () => {
+      client.off('event', eventHandler);
+      client.off('conversation.updated', conversationUpdateHandler);
+      client.disconnect();
+    };
+  }, [connectConversation]);
 
   /**
    * Render the application
@@ -510,17 +653,12 @@ export function ConsolePage() {
           <img src="/openai-logomark.svg" />
           <span>realtime console</span>
         </div>
-        <div className="content-api-key">
-          {!LOCAL_RELAY_SERVER_URL && (
-            <Button
-              icon={Edit}
-              iconPosition="end"
-              buttonStyle="flush"
-              label={`api key: ${apiKey.slice(0, 3)}...`}
-              onClick={() => resetAPIKey()}
-            />
-          )}
-        </div>
+        {/* 可选地显示部分 API 密钥 */}
+        {!LOCAL_RELAY_SERVER_URL && (
+          <div className="content-api-key">
+            <span>api key: {`${apiKey.slice(0, 3)}...`}</span>
+          </div>
+        )}
       </div>
       <div className="content-main">
         <div className="content-logs">
@@ -536,7 +674,7 @@ export function ConsolePage() {
             <div className="content-block-title">events</div>
             <div className="content-block-body" ref={eventsScrollRef}>
               {!realtimeEvents.length && `awaiting connection...`}
-              {realtimeEvents.map((realtimeEvent, i) => {
+              {realtimeEvents.map((realtimeEvent: RealtimeEvent, i: number) => {
                 const count = realtimeEvent.count;
                 const event = { ...realtimeEvent.event };
                 if (event.type === 'input_audio_buffer.append') {
@@ -602,7 +740,7 @@ export function ConsolePage() {
             <div className="content-block-title">conversation</div>
             <div className="content-block-body" data-conversation-content>
               {!items.length && `awaiting connection...`}
-              {items.map((conversationItem, i) => {
+              {items.map((conversationItem: ItemType, i: number) => {
                 return (
                   <div className="conversation-item" key={conversationItem.id}>
                     <div className={`speaker ${conversationItem.role || ''}`}>
@@ -664,9 +802,9 @@ export function ConsolePage() {
           </div>
           <div className="content-actions">
             <Toggle
-              defaultValue={false}
-              labels={['manual', 'vad']}
-              values={['none', 'server_vad']}
+              defaultValue={true}
+              labels={['VAD On', 'VAD Off']}
+              values={['server_vad', 'none']}
               onChange={(_, value) => changeTurnEndType(value)}
             />
             <div className="spacer" />
@@ -695,37 +833,36 @@ export function ConsolePage() {
           <div className="content-block map">
             <div className="content-block-title">get_weather()</div>
             <div className="content-block-title bottom">
-              {marker?.location || 'not yet retrieved'}
-              {!!marker?.temperature && (
-                <>
-                  <br />
-                  🌡️ {marker.temperature.value} {marker.temperature.units}
-                </>
-              )}
-              {!!marker?.wind_speed && (
-                <>
-                  {' '}
-                  🍃 {marker.wind_speed.value} {marker.wind_speed.units}
-                </>
-              )}
-            </div>
-            <div className="content-block-body full">
-              {coords && (
+              {/* Removed Map component */}
+              {/* {coords && (
                 <Map
                   center={[coords.lat, coords.lng]}
                   location={coords.location}
                 />
-              )}
+              )} */}
             </div>
-          </div>
-          <div className="content-block kv">
-            <div className="content-block-title">set_memory()</div>
-            <div className="content-block-body content-kv">
-              {JSON.stringify(memoryKv, null, 2)}
+            <div className="content-block-body full">
+              {/* Removed Map component */}
+              {/* {coords && (
+                <Map
+                  center={[coords.lat, coords.lng]}
+                  location={coords.location}
+                />
+              )} */}
             </div>
           </div>
         </div>
       </div>
+      {isVoiceMode && (
+        <div className="voice-indicator">
+          <div className="voice-ball"></div>
+        </div>
+      )}
+      <Button
+        label={isVoiceMode ? '关闭语音式' : '开启语音模式'}
+        onClick={() => setIsVoiceMode(!isVoiceMode)}
+        disabled={!isConnected}
+      />
     </div>
   );
 }

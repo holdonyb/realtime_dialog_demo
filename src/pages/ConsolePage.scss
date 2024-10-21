@@ -277,4 +277,82 @@
       }
     }
   }
+
+  .voice-indicator {
+    position: fixed;
+    bottom: 80px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    background-color: #0099ff;
+    border-radius: 50%;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0% {
+      transform: scale(0.9);
+    }
+    50% {
+      transform: scale(1);
+    }
+    100% {
+      transform: scale(0.9);
+    }
+  }
+}
+
+@media (max-width: 600px) {
+    [data-component='ConsolePage'] {
+        font-size: 14px;
+        /* 其他移动端样式调整 */
+
+        /* 优化语音指示器 */
+        .voice-indicator {
+            bottom: 10px;
+            right: 10px;
+            .voice-ball {
+                width: 40px;
+                height: 40px;
+            }
+        }
+
+        /* 调整按钮大小和间距 */
+        .content-actions {
+            flex-direction: column;
+            gap: 12px;
+            button {
+                width: 100%;
+                padding: 10px 0;
+                font-size: 16px;
+            }
+        }
+
+        /* 优化对话区域的布局 */
+        .content-main {
+            margin: 0px 8px;
+            flex-direction: column;
+        }
+
+        .conversation {
+            height: 150px;
+            max-height: 150px;
+        }
+
+        /* 调整事件日志区域 */
+        .events {
+            font-size: 12px;
+        }
+
+        /* 隐藏不必要的侧边栏内容 */
+        .content-right {
+            display: none;
+        }
+    }
+}
+
+@media (max-width: 768px) {
+  .content-block.events {
+    display: none;
+  }
 }
