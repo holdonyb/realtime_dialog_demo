@@ -148,23 +148,15 @@ export function ConsolePage() {
    * .appendInputAudio() for each sample
    */
   const startRecording = async () => {
+    setIsRecording(true);
+    const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
-    const client = clientRef.current;
-
-    // First check if we're already recording and pause if needed
-    if (wavRecorder.getStatus() === 'recording') {
-      await wavRecorder.pause();
-    }
-
-    setIsRecording(true);
-    
     const trackSampleOffset = await wavStreamPlayer.interrupt();
     if (trackSampleOffset?.trackId) {
       const { trackId, offset } = trackSampleOffset;
       await client.cancelResponse(trackId, offset);
     }
-    
     await wavRecorder.record((data) => client.appendInputAudio(data.mono));
   };
 
@@ -182,8 +174,17 @@ export function ConsolePage() {
   /**
    * Toggle between text input and voice input modes
    */
-  const toggleInputMode = () => {
-    setIsTextInputMode((prevMode) => !prevMode);
+  const toggleInputMode = async () => {
+    setIsTextInputMode((prevMode) => {
+      const newMode = !prevMode;
+      if (newMode) {
+        // Only disconnect if we're currently connected
+        if (isConnected) {
+          disconnectConversation();
+        }
+      }
+      return newMode;
+    });
   };
 
   /**
@@ -192,197 +193,79 @@ export function ConsolePage() {
   const handleTextInputSubmit = async () => {
     if (userInput.trim() === '') return;
 
-    const client = clientRef.current;
-    
-    // Connect to the conversation if not already connected
-    if (!isConnected) {
-      await connectConversation();
-    }
+    const currentInput = userInput;
+    setUserInput('');
 
-    // Send the message through RealtimeClient
-    client.sendUserMessageContent([
+    // Add user input to conversation
+    setItems((prevItems) => [
+      ...prevItems,
       {
-        type: 'input_text',
-        text: userInput,
-      },
+        id: `user-${Date.now()}`,
+        role: 'user',
+        object: 'thread.message',
+        formatted: {
+          text: currentInput,
+        },
+      } as ItemType,
     ]);
 
-    setUserInput('');
-  };
+    // Get GPT-4 response
+    const response = await getTextResponse(currentInput);
 
-  const changeTurnEndType = async (value: string) => {
-    const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
-    if (value === 'none' && wavRecorder.getStatus() === 'recording') {
-      await wavRecorder.pause();
-    }
-    client.updateSession({
-      turn_detection: value === 'none' ? null : { type: 'server_vad' },
-    });
-    if (value === 'server_vad' && client.isConnected()) {
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
-    }
-    setCanPushToTalk(value === 'none');
-  };
-
-  /**
-   * Set up render loops for the visualization canvas
-   */
-  useEffect(() => {
-    let isLoaded = true;
-
-    const wavRecorder = wavRecorderRef.current;
-    const clientCanvas = clientCanvasRef.current;
-    let clientCtx: CanvasRenderingContext2D | null = null;
-
-    const wavStreamPlayer = wavStreamPlayerRef.current;
-    const serverCanvas = serverCanvasRef.current;
-    let serverCtx: CanvasRenderingContext2D | null = null;
-
-    const render = () => {
-      if (isLoaded) {
-        if (clientCanvas) {
-          if (!clientCanvas.width || !clientCanvas.height) {
-            clientCanvas.width = clientCanvas.offsetWidth;
-            clientCanvas.height = clientCanvas.offsetHeight;
-          }
-          clientCtx = clientCtx || clientCanvas.getContext('2d');
-          if (clientCtx) {
-            clientCtx.clearRect(0, 0, clientCanvas.width, clientCanvas.height);
-            const result = wavRecorder.recording
-              ? wavRecorder.getFrequencies('voice')
-              : { values: new Float32Array([0]) };
-            WavRenderer.drawBars(
-              clientCanvas,
-              clientCtx,
-              result.values,
-              '#0099ff',
-              10,
-              0,
-              8
-            );
-          }
-        }
-        if (serverCanvas) {
-          if (!serverCanvas.width || !serverCanvas.height) {
-            serverCanvas.width = serverCanvas.offsetWidth;
-            serverCanvas.height = serverCanvas.offsetHeight;
-          }
-          serverCtx = serverCtx || serverCanvas.getContext('2d');
-          if (serverCtx) {
-            serverCtx.clearRect(0, 0, serverCanvas.width, serverCanvas.height);
-            const result = wavStreamPlayer.analyser
-              ? wavStreamPlayer.getFrequencies('voice')
-              : { values: new Float32Array([0]) };
-            WavRenderer.drawBars(
-              serverCanvas,
-              serverCtx,
-              result.values,
-              '#009900',
-              10,
-              0,
-              8
-            );
-          }
-        }
-        window.requestAnimationFrame(render);
-      }
-    };
-    render();
-
-    return () => {
-      isLoaded = false;
-    };
-  }, []);
-
-  /**
-   * Core RealtimeClient and audio capture setup
-   * Set all of our instructions, tools, events and more
-   */
-  useEffect(() => {
-    // Get refs
-    const wavStreamPlayer = wavStreamPlayerRef.current;
-    const client = clientRef.current;
-
-    // Set instructions
-    client.updateSession({ instructions: instructions });
-    // Set transcription, otherwise we don't get user transcriptions back
-    client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
-
-    // Add tools
-    client.addTool(
+    // Add GPT-4 response to conversation
+    setItems((prevItems) => [
+      ...prevItems,
       {
-        name: 'set_memory',
-        description: 'Saves important data about the user into memory.',
-        parameters: {
-          type: 'object',
-          properties: {
-            key: {
-              type: 'string',
-              description:
-                'The key of the memory value. Always use lowercase and underscores, no other characters.',
-            },
-            value: {
-              type: 'string',
-              description: 'Value can be anything represented as a string',
-            },
-          },
-          required: ['key', 'value'],
+        id: `assistant-${Date.now()}`,
+        role: 'assistant', 
+        object: 'thread.message',
+        formatted: {
+          text: response,
         },
-      },
-      async ({ key, value }: { [key: string]: any }) => {
-        setMemoryKv((memoryKv) => {
-          const newKv = { ...memoryKv };
-          newKv[key] = value;
-          return newKv;
-        });
-        return { ok: true };
-      }
+      } as ItemType,
+    ]);
+  };
+
+  /**
+   * GPT-4 API call function
+   */
+  async function getTextResponse(input: string): Promise<string> {
+    try {
+      const openai = new OpenAI({
+        apiKey: apiKey,
+        dangerouslyAllowBrowser: true
+      });
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: instructions },
+          { role: 'user', content: input }
+        ],
+        temperature: 0.7,
+      });
+
+      return response.choices[0].message.content?.trim() || 'No response generated';
+    } catch (error: any) {
+      console.error('Error calling OpenAI API:', error.message);
+      return `Error: ${error.message}`;
+    }
+  }
+
+  const changeTurnEndType = useCallback((value: string) => {
+    const client = clientRef.current;
+    client.disconnect();
+    clientRef.current = new RealtimeClient(
+      LOCAL_RELAY_SERVER_URL
+        ? { url: LOCAL_RELAY_SERVER_URL }
+        : {
+            apiKey: apiKey,
+            dangerouslyAllowAPIKeyInBrowser: true
+          }
     );
-
-    client.on('error', (event: any) => console.error(event));
-    client.on('conversation.interrupted', async () => {
-      const trackSampleOffset = await wavStreamPlayer.interrupt();
-      if (trackSampleOffset?.trackId) {
-        const { trackId, offset } = trackSampleOffset;
-        await client.cancelResponse(trackId, offset);
-      }
-    });
-    client.on('conversation.updated', async ({ item, delta }: any) => {
-      const items = client.conversation.getItems();
-      if (delta?.audio) {
-        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
-      }
-      if (
-        item.role === 'assistant' && 
-        item.status === 'completed' && 
-        item.formatted.audio?.length && 
-        !item.formatted.file  // Only process if we haven't created the file yet
-      ) {
-        try {
-          const wavFile = await WavRecorder.decode(
-            item.formatted.audio,
-            24000,
-            24000
-          );
-          item.formatted.file = wavFile;
-          // Force a re-render to show the audio player
-          setItems([...items]);
-        } catch (error) {
-          console.error('Error processing audio:', error);
-        }
-      }
-      setItems(items);
-    });
-
-    setItems(client.conversation.getItems());
-
-    return () => {
-      // cleanup; resets to defaults
-      client.reset();
-    };
-  }, []);
-
+    if (isConnected) {
+      client.connect();
+    }
+  }, [apiKey, isConnected]);
 
   /**
    * Render the application
@@ -475,15 +358,13 @@ export function ConsolePage() {
         </div>
         <div className="content-logs" style={{ gridArea: 'logs' }}>
           <div className="content-actions" style={{ gridArea: 'actions', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div className="controls-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              {!isTextInputMode && (
-                <Toggle
-                  defaultValue={false}
-                  labels={['manual', 'vad']}
-                  values={['none', 'server_vad']}
-                  onChange={(_, value) => changeTurnEndType(value)}
-                />
-              )}
+            <div className="voice-controls" style={{ display: isTextInputMode ? 'none' : 'flex', alignItems: 'center', gap: '16px' }}>
+              <Toggle
+                defaultValue={false}
+                labels={['manual', 'vad']}
+                values={['none', 'server_vad']}
+                onChange={(_, value) => changeTurnEndType(value)}
+              />
               <Button
                 label={isConnected ? 'disconnect' : 'connect'}
                 iconPosition={isConnected ? 'end' : 'start'}
@@ -494,7 +375,7 @@ export function ConsolePage() {
                 }
               />
             </div>
-            {isConnected && canPushToTalk && !isTextInputMode && (
+            {isConnected && canPushToTalk && (
               <Button
                 label="Push to Talk"
                 icon={Zap}
