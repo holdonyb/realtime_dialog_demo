@@ -1,17 +1,5 @@
-/**
- * Running a local relay server will allow you to hide your API key
- * and run custom logic on the server
- *
- * Set the local relay server address to:
- * REACT_APP_LOCAL_RELAY_SERVER_URL=http://localhost:8081
- *
- * This will also require you to set OPENAI_API_KEY= in a `.env` file
- * You can run it with `npm run relay`, in parallel with `npm start`
- */
-const LOCAL_RELAY_SERVER_URL: string =
-  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
-
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { OpenAI } from 'openai';
 
 import { RealtimeClient } from '@openai/realtime-api-beta';
 import { ItemType } from '@openai/realtime-api-beta/dist/lib/client.js';
@@ -27,18 +15,21 @@ import './ConsolePage.scss';
 
 import ReactMarkdown from 'react-markdown';
 
+const LOCAL_RELAY_SERVER_URL = process.env.REACT_APP_RELAY_SERVER_URL || '';
+
 export function ConsolePage() {
   /**
    * Ask user for API Key
    * If we're using the local relay server, we don't need this
    */
-  const apiKey = LOCAL_RELAY_SERVER_URL
-    ? ''
-    : localStorage.getItem('tmp::voice_api_key') ||
-      prompt('OpenAI API Key') ||
-      '';
-  if (apiKey !== '') {
-    localStorage.setItem('tmp::voice_api_key', apiKey);
+  const apiKey = process.env.REACT_APP_OPENAI_API_KEY || localStorage.getItem('tmp::voice_api_key') || '';
+
+  if (!LOCAL_RELAY_SERVER_URL && !apiKey) {
+    const promptedKey = prompt('OpenAI API Key');
+    if (promptedKey) {
+      localStorage.setItem('tmp::voice_api_key', promptedKey);
+      window.location.reload();
+    }
   }
 
   /**
@@ -59,7 +50,7 @@ export function ConsolePage() {
         ? { url: LOCAL_RELAY_SERVER_URL }
         : {
             apiKey: apiKey,
-            dangerouslyAllowAPIKeyInBrowser: true,
+            dangerouslyAllowAPIKeyInBrowser: true
           }
     )
   );
@@ -82,6 +73,7 @@ export function ConsolePage() {
   const [isRecording, setIsRecording] = useState(false);
   const [memoryKv, setMemoryKv] = useState<{ [key: string]: any }>({});
   const [isTextInputMode, setIsTextInputMode] = useState(false);
+  const [userInput, setUserInput] = useState('');
 
   /**
    * When you click the API key
@@ -156,15 +148,23 @@ export function ConsolePage() {
    * .appendInputAudio() for each sample
    */
   const startRecording = async () => {
-    setIsRecording(true);
-    const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
+    const client = clientRef.current;
+
+    // First check if we're already recording and pause if needed
+    if (wavRecorder.getStatus() === 'recording') {
+      await wavRecorder.pause();
+    }
+
+    setIsRecording(true);
+    
     const trackSampleOffset = await wavStreamPlayer.interrupt();
     if (trackSampleOffset?.trackId) {
       const { trackId, offset } = trackSampleOffset;
       await client.cancelResponse(trackId, offset);
     }
+    
     await wavRecorder.record((data) => client.appendInputAudio(data.mono));
   };
 
@@ -180,8 +180,36 @@ export function ConsolePage() {
   };
 
   /**
-   * Switch between Manual <> VAD mode for communication
+   * Toggle between text input and voice input modes
    */
+  const toggleInputMode = () => {
+    setIsTextInputMode((prevMode) => !prevMode);
+  };
+
+  /**
+   * Handle text input submission
+   */
+  const handleTextInputSubmit = async () => {
+    if (userInput.trim() === '') return;
+
+    const client = clientRef.current;
+    
+    // Connect to the conversation if not already connected
+    if (!isConnected) {
+      await connectConversation();
+    }
+
+    // Send the message through RealtimeClient
+    client.sendUserMessageContent([
+      {
+        type: 'input_text',
+        text: userInput,
+      },
+    ]);
+
+    setUserInput('');
+  };
+
   const changeTurnEndType = async (value: string) => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
@@ -195,13 +223,6 @@ export function ConsolePage() {
       await wavRecorder.record((data) => client.appendInputAudio(data.mono));
     }
     setCanPushToTalk(value === 'none');
-  };
-
-  /**
-   * Toggle between text input and voice input modes
-   */
-  const toggleInputMode = () => {
-    setIsTextInputMode((prevMode) => !prevMode);
   };
 
   /**
@@ -362,6 +383,7 @@ export function ConsolePage() {
     };
   }, []);
 
+
   /**
    * Render the application
    */
@@ -453,13 +475,15 @@ export function ConsolePage() {
         </div>
         <div className="content-logs" style={{ gridArea: 'logs' }}>
           <div className="content-actions" style={{ gridArea: 'actions', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div className="voice-controls" style={{ display: isTextInputMode ? 'none' : 'flex', alignItems: 'center', gap: '16px' }}>
-              <Toggle
-                defaultValue={false}
-                labels={['manual', 'vad']}
-                values={['none', 'server_vad']}
-                onChange={(_, value) => changeTurnEndType(value)}
-              />
+            <div className="controls-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {!isTextInputMode && (
+                <Toggle
+                  defaultValue={false}
+                  labels={['manual', 'vad']}
+                  values={['none', 'server_vad']}
+                  onChange={(_, value) => changeTurnEndType(value)}
+                />
+              )}
               <Button
                 label={isConnected ? 'disconnect' : 'connect'}
                 iconPosition={isConnected ? 'end' : 'start'}
@@ -470,7 +494,7 @@ export function ConsolePage() {
                 }
               />
             </div>
-            {isConnected && canPushToTalk && (
+            {isConnected && canPushToTalk && !isTextInputMode && (
               <Button
                 label="Push to Talk"
                 icon={Zap}
@@ -496,7 +520,26 @@ export function ConsolePage() {
         </div>
         <div className="content-input" style={{ gridArea: 'input', padding: '16px' }}>
           {isTextInputMode && (
-            <input type="text" placeholder="Type your message here..." style={{ width: '100%', padding: '8px' }} />
+            <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+              <input
+                type="text"
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleTextInputSubmit();
+                  }
+                }}
+                placeholder="Type your message here..."
+                style={{ flexGrow: 1, padding: '8px' }}
+              />
+              <Button
+                label="Send"
+                onClick={handleTextInputSubmit}
+                buttonStyle="action"
+              />
+            </div>
           )}
         </div>
       </div>

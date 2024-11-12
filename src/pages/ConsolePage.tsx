@@ -303,12 +303,12 @@ export function ConsolePage() {
     // Get refs
     const wavStreamPlayer = wavStreamPlayerRef.current;
     const client = clientRef.current;
-
+  
     // Set instructions
     client.updateSession({ instructions: instructions });
     // Set transcription, otherwise we don't get user transcriptions back
     client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
-
+  
     // Add tools
     client.addTool(
       {
@@ -339,7 +339,7 @@ export function ConsolePage() {
         return { ok: true };
       }
     );
-
+  
     client.on('error', (event: any) => console.error(event));
     client.on('conversation.interrupted', async () => {
       const trackSampleOffset = await wavStreamPlayer.interrupt();
@@ -348,35 +348,29 @@ export function ConsolePage() {
         await client.cancelResponse(trackId, offset);
       }
     });
+  
     client.on('conversation.updated', async ({ item, delta }: any) => {
       const items = client.conversation.getItems();
       if (delta?.audio) {
         wavStreamPlayer.add16BitPCM(delta.audio, item.id);
       }
       if (
-        item.role === 'assistant' && 
-        item.status === 'completed' && 
-        item.formatted.audio?.length && 
-        !item.formatted.file  // Only process if we haven't created the file yet
+        item.role === 'assistant' &&
+        item.status === 'completed' &&
+        (item.formatted.text || item.formatted.transcript) // 确保有文本数据
       ) {
-        try {
-          const wavFile = await WavRecorder.decode(
-            item.formatted.audio,
-            24000,
-            24000
-          );
-          item.formatted.file = wavFile;
-          // Force a re-render to show the audio player
+        if (!item.formatted.text && item.formatted.transcript) {
+          item.formatted.text = item.formatted.transcript;
+      }
+      // 确保 item 包含了文本内容或音频内容
+        if (item.formatted.text || item.formatted.audio?.length) {
           setItems([...items]);
-        } catch (error) {
-          console.error('Error processing audio:', error);
         }
       }
-      setItems(items);
     });
-
+  
     setItems(client.conversation.getItems());
-
+  
     return () => {
       // cleanup; resets to defaults
       client.reset();
@@ -462,10 +456,12 @@ export function ConsolePage() {
                         </div>
                       )}
                     {conversationItem.formatted.file && (
-                      <audio
-                        src={conversationItem.formatted.file.url}
-                        controls
-                      />
+                      <div className="audio-content">
+                        <audio
+                          src={conversationItem.formatted.file.url}
+                          controls
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
