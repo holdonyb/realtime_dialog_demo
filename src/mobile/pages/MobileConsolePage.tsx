@@ -28,7 +28,7 @@ export function MobileConsolePage() {
   const [userInput, setUserInput] = useState('');
   const [showVoiceButton, setShowVoiceButton] = useState(true);
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
-  const [currentTranscript, setCurrentTranscript] = useState('');
+//   const [currentTranscript, setCurrentTranscript] = useState('');
 
   // Core functions
   const connectConversation = useCallback(async () => {
@@ -133,7 +133,7 @@ export function MobileConsolePage() {
     
     setIsVoiceChatMode(false);
     setIsRecording(false);
-    setCurrentTranscript('');
+    // setCurrentTranscript('');
     
     client.updateSession({
       turn_detection: null
@@ -192,7 +192,7 @@ export function MobileConsolePage() {
       // Handle user transcripts
       if (item.role === 'user' && delta?.transcript) {
         item.formatted.text = delta.transcript;
-        setCurrentTranscript(delta.transcript);
+        // setCurrentTranscript(delta.transcript);
       }
 
       // Always update items to show incremental text changes
@@ -241,11 +241,11 @@ export function MobileConsolePage() {
             </div>
           </div>
         ))}
-        {isVoiceChatMode && currentTranscript && (
+        {/* {isVoiceChatMode && currentTranscript && (
           <div className="current-transcript">
             <p>{currentTranscript}</p>
           </div>
-        )}
+        )} */}
       </main>
 
       {isVoiceChatMode ? (
