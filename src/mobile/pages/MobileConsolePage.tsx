@@ -40,6 +40,9 @@ export function MobileConsolePage() {
   // Add new ref to track streaming status
   const streamingAudioRef = useRef<{[key: string]: boolean}>({});
 
+  // Add this new ref to track which messages are currently being processed
+  const processingAudioRef = useRef<{[key: string]: boolean}>({});
+
   // Core functions
   const connectConversation = useCallback(async () => {
     const client = clientRef.current;
@@ -67,6 +70,7 @@ export function MobileConsolePage() {
   const startRecording = async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
 
     try {
       if (!isConnected) {
@@ -77,11 +81,19 @@ export function MobileConsolePage() {
         await client.connect();
       }
 
-      if (wavRecorder.getStatus() === 'ended') {
-        await wavRecorder.begin();
+      // First check if we're already recording and pause if needed
+      if (wavRecorder.getStatus() === 'recording') {
+        await wavRecorder.pause();
       }
 
       setIsRecording(true);
+      
+      // Interrupt any playing audio before starting new recording
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
+      }
       
       client.updateSession({
         turn_detection: { type: 'server_vad' }
@@ -140,7 +152,6 @@ export function MobileConsolePage() {
 
   const startVoiceChat = async () => {
     try {
-      setShouldPlayAudio(true);
       const client = clientRef.current;
       const wavRecorder = wavRecorderRef.current;
 
@@ -256,34 +267,50 @@ export function MobileConsolePage() {
       input_audio_transcription: { model: 'whisper-1' }
     });
 
-    // Define the handler function
     function handleConversationUpdate({ item, delta }: any) {
       const items = client.conversation.getItems();
       
-      // Handle assistant text updates
-      if (item.role === 'assistant') {
-        if (delta?.text) {
-          if (!item.formatted.text) {
-            item.formatted.text = '';
-          }
-          item.formatted.text += delta.text;
-          setTimeout(scrollToBottom, 100);
-        }
+      // Handle audio streaming
+      if (delta?.audio) {
+        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+      }
 
-        // Check completion status
-        if (item.status === 'completed') {
+      // Handle assistant messages
+      if (item.role === 'assistant') {
+        if (item.status === 'completed' && 
+            (item.formatted.text || item.formatted.transcript)) {
+          // Update text content
           if (!item.formatted.text && item.formatted.transcript) {
             item.formatted.text = item.formatted.transcript;
           }
+          
+          // Only update items if there's content
+          if (item.formatted.text || item.formatted.audio?.length) {
+            setItems([...items]);
+          }
 
-          // Handle audio processing only when text is complete
-          if (item.formatted.audio?.length && !item.formatted.file) {
+          // Only process audio if it hasn't been processed and isn't currently streaming
+          if (item.formatted.audio?.length && 
+              !item.formatted.file && 
+              !processingAudioRef.current[item.id] &&
+              !streamingAudioRef.current[item.id]) {
+            processingAudioRef.current[item.id] = true;
+            streamingAudioRef.current[item.id] = true; // Mark as streaming
+            
             WavRecorder.decode(item.formatted.audio, 24000, 24000)
               .then(wavFile => {
+                // Skip file creation if we've already streamed the audio
+                if (streamingAudioRef.current[item.id]) {
+                  delete processingAudioRef.current[item.id];
+                  return;
+                }
                 item.formatted.file = wavFile;
                 setItems([...items]);
               })
-              .catch(error => console.error('Error processing audio:', error));
+              .catch(error => {
+                console.error('Error processing audio:', error);
+                delete processingAudioRef.current[item.id];
+              });
           }
         }
       }
@@ -308,7 +335,25 @@ export function MobileConsolePage() {
         console.warn('Error removing event listener:', error);
       }
     };
-  }, [isVoiceChatMode, shouldPlayAudio]);
+  }, [isVoiceChatMode]);
+
+  // Add this event handler for conversation interruption
+  useEffect(() => {
+    const client = clientRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
+
+    client.on('conversation.interrupted', async () => {
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
+      }
+    });
+
+    return () => {
+      client.off('conversation.interrupted');
+    };
+  }, []);
 
   // Mobile-optimized UI
   return (
@@ -337,28 +382,23 @@ export function MobileConsolePage() {
             <div className="message-content">
               {item.role === 'assistant' ? (
                 <>
-                  {item.formatted.text && (
-                    <div className="text-content">
-                      <ReactMarkdown>{item.formatted.text}</ReactMarkdown>
-                    </div>
-                  )}
-                  {item.formatted.file && shouldPlayAudio && !audioPlayedRef.current[item.id] && (
+                  <div className="text-content">
+                    <ReactMarkdown>
+                      {item.formatted.transcript ||
+                        item.formatted.text ||
+                        '(truncated)'}
+                    </ReactMarkdown>
+                  </div>
+                  {item.formatted.file && (
                     <div className="audio-content">
-                      <audio 
+                      <audio
                         src={item.formatted.file.url}
-                        autoPlay={shouldPlayAudio}
+                        controls={false}
+                        autoPlay={true}
                         onPlay={() => {
                           console.log('Audio started playing:', item.id);
-                          // Stop any ongoing streaming when file starts playing
                           wavStreamPlayerRef.current.interrupt();
                         }}
-                        onEnded={() => {
-                          console.log('Audio finished playing:', item.id);
-                          audioPlayedRef.current[item.id] = true;
-                        }}
-                        // Add these attributes to ensure full playback
-                        preload="auto"
-                        controls={false}
                       />
                     </div>
                   )}
