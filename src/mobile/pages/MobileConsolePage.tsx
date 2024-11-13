@@ -28,7 +28,17 @@ export function MobileConsolePage() {
   const [userInput, setUserInput] = useState('');
   const [showVoiceButton, setShowVoiceButton] = useState(true);
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
+  const [shouldPlayAudio, setShouldPlayAudio] = useState(true);
 //   const [currentTranscript, setCurrentTranscript] = useState('');
+
+  // Add ref for chat container
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Add a new ref to track audio playback status
+  const audioPlayedRef = useRef<{[key: string]: boolean}>({});
+
+  // Add new ref to track streaming status
+  const streamingAudioRef = useRef<{[key: string]: boolean}>({});
 
   // Core functions
   const connectConversation = useCallback(async () => {
@@ -36,24 +46,34 @@ export function MobileConsolePage() {
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
-    setIsConnected(true);
-    setItems(client.conversation.getItems());
+    try {
+      await wavRecorder.begin();
+      await wavStreamPlayer.connect();
+      await client.connect();
+      
+      setIsConnected(true);
+      setItems(client.conversation.getItems());
 
-    await wavRecorder.begin();
-    await wavStreamPlayer.connect();
-    await client.connect();
-
-    client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
-  }, []);
+      if (!isVoiceChatMode) {
+        client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
+      }
+    } catch (error) {
+      console.error('Error connecting:', error);
+      setIsConnected(false);
+    }
+  }, [isVoiceChatMode]);
 
   const startRecording = async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
-    const wavStreamPlayer = wavStreamPlayerRef.current;
 
     try {
       if (!isConnected) {
         await connectConversation();
+      }
+
+      if (!client.isConnected()) {
+        await client.connect();
       }
 
       if (wavRecorder.getStatus() === 'ended') {
@@ -66,7 +86,11 @@ export function MobileConsolePage() {
         turn_detection: { type: 'server_vad' }
       });
       
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
+      await wavRecorder.record((data) => {
+        if (client.isConnected()) {
+          client.appendInputAudio(data.mono);
+        }
+      });
       
     } catch (error) {
       console.error('Error starting recording:', error);
@@ -91,55 +115,94 @@ export function MobileConsolePage() {
   const handleTextInputSubmit = async () => {
     if (userInput.trim() === '') return;
 
-    if (!isConnected) {
-      await connectConversation();
-    }
-
-    clientRef.current.sendUserMessageContent([{
-      type: 'input_text',
-      text: userInput,
-    }]);
-
-    setUserInput('');
-  };
-
-  const startVoiceChat = async () => {
+    const client = clientRef.current;
+    
     try {
       if (!isConnected) {
         await connectConversation();
       }
-      setIsVoiceChatMode(true);
-      setIsRecording(true);
-      
+
+      if (!client.isConnected()) {
+        await client.connect();
+      }
+
+      client.sendUserMessageContent([{
+        type: 'input_text',
+        text: userInput,
+      }]);
+
+      setUserInput('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
+  };
+
+  const startVoiceChat = async () => {
+    try {
+      setShouldPlayAudio(true);
       const client = clientRef.current;
       const wavRecorder = wavRecorderRef.current;
-      
+
+      setIsVoiceChatMode(true);
+
+      if (!isConnected) {
+        await connectConversation();
+      }
+
+      if (!client.isConnected()) {
+        await client.connect();
+      }
+
       client.updateSession({
         turn_detection: { type: 'server_vad' }
       });
-      
+
       if (wavRecorder.getStatus() === 'ended') {
         await wavRecorder.begin();
       }
-      await wavRecorder.record((data) => client.appendInputAudio(data.mono));
+
+      setIsRecording(true);
+      await wavRecorder.record((data) => {
+        if (client.isConnected()) {
+          client.appendInputAudio(data.mono);
+        }
+      });
+
     } catch (error) {
       console.error('Error starting voice chat:', error);
+      setIsVoiceChatMode(false);
+      setIsRecording(false);
+      setShouldPlayAudio(false);
     }
   };
 
   const endVoiceChat = async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
     
     setIsVoiceChatMode(false);
     setIsRecording(false);
-    // setCurrentTranscript('');
+    setShouldPlayAudio(false);
+    
+    // Reset all audio tracking
+    audioPlayedRef.current = {};
+    streamingAudioRef.current = {};
     
     client.updateSession({
       turn_detection: null
     });
     
     await wavRecorder.pause();
+    await wavStreamPlayer.interrupt();
+    setTimeout(scrollToBottom, 100);
+  };
+
+  // Update the scroll helper function
+  const scrollToBottom = () => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   };
 
   // Set up event listeners and tools
@@ -155,24 +218,26 @@ export function MobileConsolePage() {
     client.on('conversation.updated', async ({ item, delta }: any) => {
       const items = client.conversation.getItems();
       
-      // Handle audio streaming
-      if (delta?.audio) {
-        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+      // Only stream audio if we haven't played the full file yet
+      if (delta?.audio && shouldPlayAudio && !audioPlayedRef.current[item.id]) {
+        if (!streamingAudioRef.current[item.id]) {
+          streamingAudioRef.current[item.id] = true;
+          wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+        }
       }
 
       // Handle assistant text updates
       if (item.role === 'assistant') {
         if (delta?.text) {
-          // Accumulate text properly
           if (!item.formatted.text) {
             item.formatted.text = '';
           }
           item.formatted.text += delta.text;
+          setTimeout(scrollToBottom, 100);
         }
 
         // Check completion status
         if (item.status === 'completed') {
-          // Handle transcript if available
           if (!item.formatted.text && item.formatted.transcript) {
             item.formatted.text = item.formatted.transcript;
           }
@@ -182,6 +247,10 @@ export function MobileConsolePage() {
             try {
               const wavFile = await WavRecorder.decode(item.formatted.audio, 24000, 24000);
               item.formatted.file = wavFile;
+              // Stop streaming audio when file is ready
+              wavStreamPlayer.interrupt();
+              // Reset streaming status for this item
+              delete streamingAudioRef.current[item.id];
             } catch (error) {
               console.error('Error processing audio:', error);
             }
@@ -189,20 +258,15 @@ export function MobileConsolePage() {
         }
       }
 
-      // Handle user transcripts
-      if (item.role === 'user' && delta?.transcript) {
-        item.formatted.text = delta.transcript;
-        // setCurrentTranscript(delta.transcript);
-      }
-
-      // Always update items to show incremental text changes
       setItems([...items]);
     });
 
     return () => {
       client.reset();
+      audioPlayedRef.current = {};
+      streamingAudioRef.current = {};
     };
-  }, []);
+  }, [isVoiceChatMode, shouldPlayAudio]);
 
   // Mobile-optimized UI
   return (
@@ -212,7 +276,10 @@ export function MobileConsolePage() {
         <h1>AITA Assistant</h1>
       </header>
 
-      <main className={`chat-container ${isVoiceChatMode ? 'voice-mode' : ''}`}>
+      <main 
+        ref={chatContainerRef}
+        className={`chat-container ${isVoiceChatMode ? 'voice-mode' : ''}`}
+      >
         {items.map((item) => (
           <div key={item.id} className={`message ${item.role}`}>
             <div className="message-content">
@@ -223,10 +290,23 @@ export function MobileConsolePage() {
                       <ReactMarkdown>{item.formatted.text}</ReactMarkdown>
                     </div>
                   )}
-                  {item.formatted.file && (
+                  {item.formatted.file && shouldPlayAudio && !audioPlayedRef.current[item.id] && (
                     <div className="audio-content">
                       <audio 
-                        src={item.formatted.file.url}  
+                        src={item.formatted.file.url}
+                        autoPlay={shouldPlayAudio}
+                        onPlay={() => {
+                          console.log('Audio started playing:', item.id);
+                          // Stop any ongoing streaming when file starts playing
+                          wavStreamPlayerRef.current.interrupt();
+                        }}
+                        onEnded={() => {
+                          console.log('Audio finished playing:', item.id);
+                          audioPlayedRef.current[item.id] = true;
+                        }}
+                        // Add these attributes to ensure full playback
+                        preload="auto"
+                        controls={false}
                       />
                     </div>
                   )}

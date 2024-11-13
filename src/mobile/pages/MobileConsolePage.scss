@@ -33,6 +33,13 @@
       padding: 1rem;
       padding-bottom: 80px;
       -webkit-overflow-scrolling: touch;
+      scroll-behavior: smooth;
+  
+      &::after {
+        content: '';
+        display: block;
+        height: 20px;
+      }
   
       .message {
         margin-bottom: 1.5rem;
