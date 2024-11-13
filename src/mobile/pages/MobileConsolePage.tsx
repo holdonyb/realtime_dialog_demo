@@ -54,14 +54,15 @@ export function MobileConsolePage() {
       setIsConnected(true);
       setItems(client.conversation.getItems());
 
-      if (!isVoiceChatMode) {
-        client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
-      }
+      // Remove automatic initial message
+      // if (!isVoiceChatMode) {
+      //   client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
+      // }
     } catch (error) {
       console.error('Error connecting:', error);
       setIsConnected(false);
     }
-  }, [isVoiceChatMode]);
+  }, []);
 
   const startRecording = async () => {
     const client = clientRef.current;
@@ -185,7 +186,7 @@ export function MobileConsolePage() {
     setIsRecording(false);
     setShouldPlayAudio(false);
     
-    // Reset all audio tracking
+    // Reset audio tracking
     audioPlayedRef.current = {};
     streamingAudioRef.current = {};
     
@@ -193,9 +194,49 @@ export function MobileConsolePage() {
       turn_detection: null
     });
     
+    // Stop recording and playback
     await wavRecorder.pause();
+    await wavRecorder.end();  // Add this to fully stop recording
     await wavStreamPlayer.interrupt();
+    
     setTimeout(scrollToBottom, 100);
+  };
+
+  // Add new function to reset conversation
+  const resetConversation = async () => {
+    const client = clientRef.current;
+    const wavRecorder = wavRecorderRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
+    
+    try {
+      // Stop any ongoing recordings or playback
+      if (isRecording) {
+        await wavRecorder.pause();
+        await wavRecorder.end();
+      }
+      await wavStreamPlayer.interrupt();
+      
+      // Reset all states
+      setIsVoiceChatMode(false);
+      setIsRecording(false);
+      setShouldPlayAudio(true);
+      setIsConnected(false);
+      setUserInput('');
+      
+      // Clear items first
+      setItems([]);
+      
+      // Clear audio tracking
+      audioPlayedRef.current = {};
+      streamingAudioRef.current = {};
+      
+      // Reset client and reconnect
+      client.reset();
+      await connectConversation();
+      
+    } catch (error) {
+      console.error('Error resetting conversation:', error);
+    }
   };
 
   // Update the scroll helper function
@@ -215,17 +256,10 @@ export function MobileConsolePage() {
       input_audio_transcription: { model: 'whisper-1' }
     });
 
-    client.on('conversation.updated', async ({ item, delta }: any) => {
+    // Define the handler function
+    function handleConversationUpdate({ item, delta }: any) {
       const items = client.conversation.getItems();
       
-      // Only stream audio if we haven't played the full file yet
-      if (delta?.audio && shouldPlayAudio && !audioPlayedRef.current[item.id]) {
-        if (!streamingAudioRef.current[item.id]) {
-          streamingAudioRef.current[item.id] = true;
-          wavStreamPlayer.add16BitPCM(delta.audio, item.id);
-        }
-      }
-
       // Handle assistant text updates
       if (item.role === 'assistant') {
         if (delta?.text) {
@@ -242,29 +276,37 @@ export function MobileConsolePage() {
             item.formatted.text = item.formatted.transcript;
           }
 
-          // Handle audio processing
+          // Handle audio processing only when text is complete
           if (item.formatted.audio?.length && !item.formatted.file) {
-            try {
-              const wavFile = await WavRecorder.decode(item.formatted.audio, 24000, 24000);
-              item.formatted.file = wavFile;
-              // Stop streaming audio when file is ready
-              wavStreamPlayer.interrupt();
-              // Reset streaming status for this item
-              delete streamingAudioRef.current[item.id];
-            } catch (error) {
-              console.error('Error processing audio:', error);
-            }
+            WavRecorder.decode(item.formatted.audio, 24000, 24000)
+              .then(wavFile => {
+                item.formatted.file = wavFile;
+                setItems([...items]);
+              })
+              .catch(error => console.error('Error processing audio:', error));
           }
         }
       }
 
+      // Handle user transcripts
+      if (item.role === 'user' && delta?.transcript) {
+        item.formatted.text = delta.transcript;
+        if (!isVoiceChatMode) {
+          setTimeout(scrollToBottom, 100);
+        }
+      }
+
       setItems([...items]);
-    });
+    }
+
+    client.on('conversation.updated', handleConversationUpdate);
 
     return () => {
-      client.reset();
-      audioPlayedRef.current = {};
-      streamingAudioRef.current = {};
+      try {
+        client.off('conversation.updated', handleConversationUpdate);
+      } catch (error) {
+        console.warn('Error removing event listener:', error);
+      }
     };
   }, [isVoiceChatMode, shouldPlayAudio]);
 
@@ -272,7 +314,17 @@ export function MobileConsolePage() {
   return (
     <div className="mobile-console">
       <header className="mobile-header">
-        <img src="/openai-logomark.svg" alt="OpenAI Logo" style={{ width: '24px', height: '24px' }} />
+        <button 
+          onClick={resetConversation} 
+          className="end-chat-button"
+        >
+          <X size={20} />
+          <span>End Chat</span>
+        </button>
+        <img 
+          src="/openai-logomark.svg" 
+          alt="OpenAI Logo" 
+        />
         <h1>AITA Assistant</h1>
       </header>
 
