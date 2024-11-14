@@ -10,6 +10,168 @@ import './MobileConsolePage.scss';
 
 const LOCAL_RELAY_SERVER_URL = process.env.REACT_APP_RELAY_SERVER_URL || '';
 
+// 定义 API 响应的接口
+interface TeacherClass {
+  id: number;
+  description: string;
+  name: string;
+  im_group_id: string;
+  example_class: boolean;
+  im_group_msg: string | null;
+  im_group_time: string | null;
+  code_url: string;
+  code_url_online: string;
+  school_id: number | null;
+  grade_id: number;
+  iswork: boolean;
+  headmaster_id: string;
+  subject_id: number;
+  subject_text: string;
+  class_avator: string;
+  create_time: string;
+  update_time: string;
+}
+
+interface TeacherClassesResponse {
+  data: TeacherClass[];
+  code: number;
+  msg: string;
+}
+
+// 添加新的接口定义
+interface TeacherHomework {
+  id: number;
+  token: string | null;
+  organization_id: number;
+  class_id: number | null;
+  grade_id: number;
+  total_score: number | null;
+  subject_id: number;
+  type: string;
+  assignment_type: string;
+  file_type: string | null;
+  task_id: string | null;
+  name: string;
+  description: string;
+  teacher_id: number;
+  is_allow_ai: boolean;
+  questions: any[];
+  origin_urls: string;
+  is_includes_answer: boolean;
+  is_generate_answer: boolean;
+  start_time: string | null;
+  deadline_time: string;
+  create_time: string;
+  update_time: string;
+}
+
+interface TeacherHomeworksResponse {
+  data: TeacherHomework[];
+  code: number;
+  msg: string;
+}
+
+// 添加新的接口定义
+interface StudentSubmissionStatus {
+  user_id: number;
+  teacher_id: number;
+  class_id: number;
+  student_name: string;
+  subject_text: string;
+  avator: string;
+}
+
+// 添加新的接口定义
+interface ClassHomework {
+  assignment_id: number;
+  user_id: number;
+  class_id: number;
+  score: number;
+  prev_score: number;
+  content: string;
+  token: string;
+  feedback: string;
+  error_type_summary: string;
+  task_id: string;
+  post_status: string;
+  status: number;
+  create_time: string;
+  update_time: string;
+  isview: number;
+}
+
+// 定义工具
+const teacherClassesTool = {
+  name: 'get_teacher_classes',
+  description: 'Retrieves the list of classes taught by a given teacher. The teacher_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      teacher_id: {
+        type: 'number',
+        description: 'The numeric identifier of the teacher',
+      },
+    },
+    required: ['teacher_id'],
+  },
+};
+
+// 定义新工具
+const teacherIncompleteHomeworksTool = {
+  name: 'get_teacher_incomplete_homeworks',
+  description: 'Retrieves the list of incomplete homework assignments for a given teacher. The teacher_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      teacher_id: {
+        type: 'number',
+        description: 'The numeric identifier of the teacher',
+      },
+    },
+    required: ['teacher_id'],
+  },
+};
+
+// 定义新工具
+const checkSubmissionStatusTool = {
+  name: 'check_submission_status',
+  description: 'Retrieves the list of students who have not submitted their homework for a specific class and homework assignment. Both class_id and homework_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      class_id: {
+        type: 'number',
+        description: 'The numeric identifier of the class',
+      },
+      homework_id: {
+        type: 'number',
+        description: 'The numeric identifier of the homework assignment',
+      },
+    },
+    required: ['class_id', 'homework_id'],
+  },
+};
+
+// 定义新工具
+const getClassHomeworksTool = {
+  name: 'get_class_homeworks',
+  description: 'Retrieves the list of homework assignments for a specific class. Both student_id and class_name should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      student_id: {
+        type: 'number',
+        description: 'The numeric identifier of the student',
+      },
+      class_name: {
+        type: 'string',
+        description: 'The name of the class',
+      },
+    },
+    required: ['student_id', 'class_name'],
+  },
+};
+
 export function MobileConsolePage() {
   // Core refs
   const wavRecorderRef = useRef<WavRecorder>(new WavRecorder({ sampleRate: 24000 }));
@@ -50,17 +212,189 @@ export function MobileConsolePage() {
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
     try {
+      // 添加第一个工具（获取班级列表）
+      client.addTool(
+        teacherClassesTool,
+        async (params: { teacher_id: number }) => {
+          try {
+            const response = await fetch('/api/open/get_teacher_classes', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                teacher_id: params.teacher_id 
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch teacher classes: ${response.status}`);
+            }
+
+            const result: TeacherClassesResponse = await response.json();
+            
+            if (result.code !== 0) {
+              throw new Error(`API Error: ${result.msg}`);
+            }
+
+            return result.data;
+          } catch (error) {
+            console.error('Error fetching teacher classes:', error);
+            return { 
+              error: error instanceof Error ? error.message : 'Unable to retrieve teacher classes at this time'
+            };
+          }
+        }
+      );
+
+      // 添加第二个工具（获取未完成作业）
+      client.addTool(
+        teacherIncompleteHomeworksTool,
+        async (params: { teacher_id: number }) => {
+          try {
+            const response = await fetch('/api/open/get_teacher_incomplete_homeworks', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                teacher_id: params.teacher_id 
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch incomplete homeworks: ${response.status}`);
+            }
+
+            const result: TeacherHomeworksResponse = await response.json();
+            
+            if (result.code !== 0) {
+              throw new Error(`API Error: ${result.msg}`);
+            }
+
+            // 格式化截止日期，使其更易读
+            const formattedHomeworks = result.data.map(homework => ({
+              ...homework,
+              deadline_time: new Date(homework.deadline_time).toLocaleDateString(),
+              create_time: new Date(homework.create_time).toLocaleDateString(),
+            }));
+
+            console.log('Incomplete homeworks retrieved successfully:', formattedHomeworks);
+            return formattedHomeworks;
+          } catch (error) {
+            console.error('Error fetching incomplete homeworks:', error);
+            return { 
+              error: error instanceof Error ? error.message : 'Unable to retrieve incomplete homeworks at this time'
+            };
+          }
+        }
+      );
+
+      // 添加检查作业提交状态的工具
+      client.addTool(
+        checkSubmissionStatusTool,
+        async (params: { class_id: number; homework_id: number }) => {
+          try {
+            const response = await fetch('/api/open/check_submission_status', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                class_id: params.class_id,
+                homework_id: params.homework_id
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch submission status: ${response.status}`);
+            }
+
+            const result: StudentSubmissionStatus[] = await response.json();
+            
+            // 添加一些有用的统计信息
+            const summary = {
+              total_students: result.length,
+              students: result,
+              summary: `Total ${result.length} students haven't submitted their homework.`
+            };
+
+            console.log('Submission status retrieved successfully:', summary);
+            return summary;
+          } catch (error) {
+            console.error('Error checking submission status:', error);
+            return { 
+              error: error instanceof Error ? 
+                error.message : 
+                'Unable to retrieve submission status at this time'
+            };
+          }
+        }
+      );
+
+      // 添加获取班级作业列表的工具
+      client.addTool(
+        getClassHomeworksTool,
+        async (params: { student_id: number; class_name: string }) => {
+          try {
+            const response = await fetch('/api/open/get_class_homeworks', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                student_id: params.student_id,
+                class_name: params.class_name
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch class homeworks: ${response.status}`);
+            }
+
+            const result: ClassHomework[] = await response.json();
+            
+            // 格式化日期和添加统计信息
+            const formattedHomeworks = result.map(homework => ({
+              ...homework,
+              create_time: new Date(homework.create_time).toLocaleDateString(),
+              update_time: new Date(homework.update_time).toLocaleDateString(),
+            }));
+
+            const summary = {
+              total_homeworks: formattedHomeworks.length,
+              homeworks: formattedHomeworks,
+              summary: `Found ${formattedHomeworks.length} homework assignments for this class.`
+            };
+
+            console.log('Class homeworks retrieved successfully:', summary);
+            return summary;
+          } catch (error) {
+            console.error('Error fetching class homeworks:', error);
+            return { 
+              error: error instanceof Error ? 
+                error.message : 
+                'Unable to retrieve class homeworks at this time'
+            };
+          }
+        }
+      );
+
+      // 继续连接过程
       await wavRecorder.begin();
       await wavStreamPlayer.connect();
       await client.connect();
       
       setIsConnected(true);
       setItems(client.conversation.getItems());
-
-      // Remove automatic initial message
-      // if (!isVoiceChatMode) {
-      //   client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
-      // }
     } catch (error) {
       console.error('Error connecting:', error);
       setIsConnected(false);
@@ -111,19 +445,19 @@ export function MobileConsolePage() {
     }
   };
 
-  const stopRecording = async () => {
-    const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
+  // const stopRecording = async () => {
+  //   const client = clientRef.current;
+  //   const wavRecorder = wavRecorderRef.current;
     
-    setIsRecording(false);
+  //   setIsRecording(false);
     
-    client.updateSession({
-      turn_detection: null
-    });
+  //   client.updateSession({
+  //     turn_detection: null
+  //   });
     
-    await wavRecorder.pause();
-    client.createResponse();
-  };
+  //   await wavRecorder.pause();
+  //   client.createResponse();
+  // };
 
   const handleTextInputSubmit = async () => {
     if (userInput.trim() === '') return;
@@ -256,6 +590,8 @@ export function MobileConsolePage() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   };
+
+  
 
   // Set up event listeners and tools
   useEffect(() => {
