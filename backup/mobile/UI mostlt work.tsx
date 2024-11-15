@@ -10,6 +10,168 @@ import './MobileConsolePage.scss';
 
 const LOCAL_RELAY_SERVER_URL = process.env.REACT_APP_RELAY_SERVER_URL || '';
 
+// 定义 API 响应的接口
+interface TeacherClass {
+  id: number;
+  description: string;
+  name: string;
+  im_group_id: string;
+  example_class: boolean;
+  im_group_msg: string | null;
+  im_group_time: string | null;
+  code_url: string;
+  code_url_online: string;
+  school_id: number | null;
+  grade_id: number;
+  iswork: boolean;
+  headmaster_id: string;
+  subject_id: number;
+  subject_text: string;
+  class_avator: string;
+  create_time: string;
+  update_time: string;
+}
+
+interface TeacherClassesResponse {
+  data: TeacherClass[];
+  code: number;
+  msg: string;
+}
+
+// 添加新的接口定义
+interface TeacherHomework {
+  id: number;
+  token: string | null;
+  organization_id: number;
+  class_id: number | null;
+  grade_id: number;
+  total_score: number | null;
+  subject_id: number;
+  type: string;
+  assignment_type: string;
+  file_type: string | null;
+  task_id: string | null;
+  name: string;
+  description: string;
+  teacher_id: number;
+  is_allow_ai: boolean;
+  questions: any[];
+  origin_urls: string;
+  is_includes_answer: boolean;
+  is_generate_answer: boolean;
+  start_time: string | null;
+  deadline_time: string;
+  create_time: string;
+  update_time: string;
+}
+
+interface TeacherHomeworksResponse {
+  data: TeacherHomework[];
+  code: number;
+  msg: string;
+}
+
+// 添加新的接口定义
+interface StudentSubmissionStatus {
+  user_id: number;
+  teacher_id: number;
+  class_id: number;
+  student_name: string;
+  subject_text: string;
+  avator: string;
+}
+
+// 添加新的接口定义
+interface ClassHomework {
+  assignment_id: number;
+  user_id: number;
+  class_id: number;
+  score: number;
+  prev_score: number;
+  content: string;
+  token: string;
+  feedback: string;
+  error_type_summary: string;
+  task_id: string;
+  post_status: string;
+  status: number;
+  create_time: string;
+  update_time: string;
+  isview: number;
+}
+
+// 定义工具
+const teacherClassesTool = {
+  name: 'get_teacher_classes',
+  description: 'Retrieves the list of classes taught by a given teacher. The teacher_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      teacher_id: {
+        type: 'number',
+        description: 'The numeric identifier of the teacher',
+      },
+    },
+    required: ['teacher_id'],
+  },
+};
+
+// 定义新工具
+const teacherIncompleteHomeworksTool = {
+  name: 'get_teacher_incomplete_homeworks',
+  description: 'Retrieves the list of incomplete homework assignments for a given teacher. The teacher_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      teacher_id: {
+        type: 'number',
+        description: 'The numeric identifier of the teacher',
+      },
+    },
+    required: ['teacher_id'],
+  },
+};
+
+// 定义新工具
+const checkSubmissionStatusTool = {
+  name: 'check_submission_status',
+  description: 'Retrieves the list of students who have not submitted their homework for a specific class and homework assignment. Both class_id and homework_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      class_id: {
+        type: 'number',
+        description: 'The numeric identifier of the class',
+      },
+      homework_id: {
+        type: 'number',
+        description: 'The numeric identifier of the homework assignment',
+      },
+    },
+    required: ['class_id', 'homework_id'],
+  },
+};
+
+// 定义新工具
+const getClassHomeworksTool = {
+  name: 'get_class_homeworks',
+  description: 'Retrieves the list of homework assignments for a specific class. Both student_id and class_name should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      student_id: {
+        type: 'number',
+        description: 'The numeric identifier of the student',
+      },
+      class_name: {
+        type: 'string',
+        description: 'The name of the class',
+      },
+    },
+    required: ['student_id', 'class_name'],
+  },
+};
+
 export function MobileConsolePage() {
   // Core refs
   const wavRecorderRef = useRef<WavRecorder>(new WavRecorder({ sampleRate: 24000 }));
@@ -30,6 +192,7 @@ export function MobileConsolePage() {
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
   const [shouldPlayAudio, setShouldPlayAudio] = useState(true);
 //   const [currentTranscript, setCurrentTranscript] = useState('');
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   // Add ref for chat container
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -40,13 +203,8 @@ export function MobileConsolePage() {
   // Add new ref to track streaming status
   const streamingAudioRef = useRef<{[key: string]: boolean}>({});
 
-  // Add new state for typing effect
-  const [typingText, setTypingText] = useState<{[key: string]: string}>({});
-  const [isTyping, setIsTyping] = useState<{[key: string]: boolean}>({});
-  const typingSpeedRef = useRef(30); // milliseconds per character
-
-  // Add new ref to track new messages
-  const newMessagesRef = useRef<Set<string>>(new Set());
+  // Add this new ref to track which messages are currently being processed
+  const processingAudioRef = useRef<{[key: string]: boolean}>({});
 
   // Core functions
   const connectConversation = useCallback(async () => {
@@ -55,17 +213,189 @@ export function MobileConsolePage() {
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
     try {
+      // 添加第一个工具（获取班级列表）
+      client.addTool(
+        teacherClassesTool,
+        async (params: { teacher_id: number }) => {
+          try {
+            const response = await fetch('/api/open/get_teacher_classes', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                teacher_id: params.teacher_id 
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch teacher classes: ${response.status}`);
+            }
+
+            const result: TeacherClassesResponse = await response.json();
+            
+            if (result.code !== 0) {
+              throw new Error(`API Error: ${result.msg}`);
+            }
+
+            return result.data;
+          } catch (error) {
+            console.error('Error fetching teacher classes:', error);
+            return { 
+              error: error instanceof Error ? error.message : 'Unable to retrieve teacher classes at this time'
+            };
+          }
+        }
+      );
+
+      // 添加第二个工具（获取未完成作业）
+      client.addTool(
+        teacherIncompleteHomeworksTool,
+        async (params: { teacher_id: number }) => {
+          try {
+            const response = await fetch('/api/open/get_teacher_incomplete_homeworks', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                teacher_id: params.teacher_id 
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch incomplete homeworks: ${response.status}`);
+            }
+
+            const result: TeacherHomeworksResponse = await response.json();
+            
+            if (result.code !== 0) {
+              throw new Error(`API Error: ${result.msg}`);
+            }
+
+            // 格式化截止日期，使其更易读
+            const formattedHomeworks = result.data.map(homework => ({
+              ...homework,
+              deadline_time: new Date(homework.deadline_time).toLocaleDateString(),
+              create_time: new Date(homework.create_time).toLocaleDateString(),
+            }));
+
+            console.log('Incomplete homeworks retrieved successfully:', formattedHomeworks);
+            return formattedHomeworks;
+          } catch (error) {
+            console.error('Error fetching incomplete homeworks:', error);
+            return { 
+              error: error instanceof Error ? error.message : 'Unable to retrieve incomplete homeworks at this time'
+            };
+          }
+        }
+      );
+
+      // 添加检查作业提交状态的工具
+      client.addTool(
+        checkSubmissionStatusTool,
+        async (params: { class_id: number; homework_id: number }) => {
+          try {
+            const response = await fetch('/api/open/check_submission_status', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                class_id: params.class_id,
+                homework_id: params.homework_id
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch submission status: ${response.status}`);
+            }
+
+            const result: StudentSubmissionStatus[] = await response.json();
+            
+            // 添加一些有用的统计信息
+            const summary = {
+              total_students: result.length,
+              students: result,
+              summary: `Total ${result.length} students haven't submitted their homework.`
+            };
+
+            console.log('Submission status retrieved successfully:', summary);
+            return summary;
+          } catch (error) {
+            console.error('Error checking submission status:', error);
+            return { 
+              error: error instanceof Error ? 
+                error.message : 
+                'Unable to retrieve submission status at this time'
+            };
+          }
+        }
+      );
+
+      // 添加获取班级作业列表的工具
+      client.addTool(
+        getClassHomeworksTool,
+        async (params: { student_id: number; class_name: string }) => {
+          try {
+            const response = await fetch('/api/open/get_class_homeworks', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                student_id: params.student_id,
+                class_name: params.class_name
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch class homeworks: ${response.status}`);
+            }
+
+            const result: ClassHomework[] = await response.json();
+            
+            // 格式化日期添加统计信息
+            const formattedHomeworks = result.map(homework => ({
+              ...homework,
+              create_time: new Date(homework.create_time).toLocaleDateString(),
+              update_time: new Date(homework.update_time).toLocaleDateString(),
+            }));
+
+            const summary = {
+              total_homeworks: formattedHomeworks.length,
+              homeworks: formattedHomeworks,
+              summary: `Found ${formattedHomeworks.length} homework assignments for this class.`
+            };
+
+            console.log('Class homeworks retrieved successfully:', summary);
+            return summary;
+          } catch (error) {
+            console.error('Error fetching class homeworks:', error);
+            return { 
+              error: error instanceof Error ? 
+                error.message : 
+                'Unable to retrieve class homeworks at this time'
+            };
+          }
+        }
+      );
+
+      // 继续连接过程
       await wavRecorder.begin();
       await wavStreamPlayer.connect();
       await client.connect();
       
       setIsConnected(true);
       setItems(client.conversation.getItems());
-
-      // Remove automatic initial message
-      // if (!isVoiceChatMode) {
-      //   client.sendUserMessageContent([{ type: 'input_text', text: 'Hello!' }]);
-      // }
     } catch (error) {
       console.error('Error connecting:', error);
       setIsConnected(false);
@@ -75,6 +405,7 @@ export function MobileConsolePage() {
   const startRecording = async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
 
     try {
       if (!isConnected) {
@@ -85,11 +416,19 @@ export function MobileConsolePage() {
         await client.connect();
       }
 
-      if (wavRecorder.getStatus() === 'ended') {
-        await wavRecorder.begin();
+      // First check if we're already recording and pause if needed
+      if (wavRecorder.getStatus() === 'recording') {
+        await wavRecorder.pause();
       }
 
       setIsRecording(true);
+      
+      // Interrupt any playing audio before starting new recording
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
+      }
       
       client.updateSession({
         turn_detection: { type: 'server_vad' }
@@ -107,24 +446,25 @@ export function MobileConsolePage() {
     }
   };
 
-  const stopRecording = async () => {
-    const client = clientRef.current;
-    const wavRecorder = wavRecorderRef.current;
+  // const stopRecording = async () => {
+  //   const client = clientRef.current;
+  //   const wavRecorder = wavRecorderRef.current;
     
-    setIsRecording(false);
+  //   setIsRecording(false);
     
-    client.updateSession({
-      turn_detection: null
-    });
+  //   client.updateSession({
+  //     turn_detection: null
+  //   });
     
-    await wavRecorder.pause();
-    client.createResponse();
-  };
+  //   await wavRecorder.pause();
+  //   client.createResponse();
+  // };
 
   const handleTextInputSubmit = async () => {
     if (userInput.trim() === '') return;
 
     const client = clientRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
     
     try {
       if (!isConnected) {
@@ -133,6 +473,13 @@ export function MobileConsolePage() {
 
       if (!client.isConnected()) {
         await client.connect();
+      }
+
+      // 中断当前正在播放的音频
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
       }
 
       client.sendUserMessageContent([{
@@ -150,24 +497,8 @@ export function MobileConsolePage() {
     try {
       const client = clientRef.current;
       const wavRecorder = wavRecorderRef.current;
-      const wavStreamPlayer = wavStreamPlayerRef.current;
-
-      // Clear new messages when starting voice chat
-      newMessagesRef.current.clear();
-      
-      // Stop all audio immediately
-      const audios = document.getElementsByTagName('audio');
-      Array.from(audios).forEach(audio => {
-        audio.pause();
-        audio.currentTime = 0;
-      });
-      await wavStreamPlayer.interrupt();
-
-      // Wait for audio to fully stop
-      await new Promise(resolve => setTimeout(resolve, 50));
 
       setIsVoiceChatMode(true);
-      setShouldPlayAudio(true);
 
       if (!isConnected) {
         await connectConversation();
@@ -205,9 +536,6 @@ export function MobileConsolePage() {
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
     
-    // Clear new messages when ending voice chat
-    newMessagesRef.current.clear();
-    
     setIsVoiceChatMode(false);
     setIsRecording(false);
     setShouldPlayAudio(false);
@@ -238,8 +566,10 @@ export function MobileConsolePage() {
       // Stop any ongoing recordings or playback
       if (isRecording) {
         await wavRecorder.pause();
-        await wavRecorder.end();
       }
+      
+      // 确保 WavRecorder 完全结束当前会话
+      await wavRecorder.end();
       await wavStreamPlayer.interrupt();
       
       // Reset all states
@@ -256,8 +586,13 @@ export function MobileConsolePage() {
       audioPlayedRef.current = {};
       streamingAudioRef.current = {};
       
-      // Reset client and reconnect
+      // Reset client
       client.reset();
+      
+      // 添加一个小延迟确保所有资源都被正确释放
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // 重新连接
       await connectConversation();
       
     } catch (error) {
@@ -272,6 +607,12 @@ export function MobileConsolePage() {
     }
   };
 
+  // 添加图片点击处理函数
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>, src: string) => {
+    e.preventDefault();
+    setPreviewImage(src);
+  };
+
   // Set up event listeners and tools
   useEffect(() => {
     const client = clientRef.current;
@@ -282,37 +623,57 @@ export function MobileConsolePage() {
       input_audio_transcription: { model: 'whisper-1' }
     });
 
-    // Define the handler function
     function handleConversationUpdate({ item, delta }: any) {
-      const items = client.conversation.getItems();
-      
-      // Handle assistant text updates
-      if (item.role === 'assistant') {
-        if (delta?.text) {
-          if (!item.formatted.text) {
-            item.formatted.text = '';
-          }
-          item.formatted.text += delta.text;
-          setTimeout(scrollToBottom, 100);
+      const items = client.conversation.getItems().filter(item => {
+        // 过滤掉空消息
+        if (item.role === 'user') {
+          return item.formatted.text || item.formatted.transcript;
         }
+        if (item.role === 'assistant') {
+          return (item.formatted.text || item.formatted.transcript || item.formatted.audio?.length);
+        }
+        return false;
+      });
+      
+      // Handle audio streaming
+      if (delta?.audio && shouldPlayAudio) {
+        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+        streamingAudioRef.current[item.id] = true;
+      }
 
-        // Handle audio when message is complete
-        if (item.status === 'completed') {
+      // Handle assistant messages
+      if (item.role === 'assistant') {
+        if (item.status === 'completed' && 
+            (item.formatted.text || item.formatted.transcript || item.formatted.audio?.length)) {
+          // Update text content
           if (!item.formatted.text && item.formatted.transcript) {
             item.formatted.text = item.formatted.transcript;
           }
+          
+          // Only update items if there's content
+          setItems([...items]);
 
-          // Process audio only when text is complete
-          if (item.formatted.audio?.length && !item.formatted.file) {
+          // Only process audio if it hasn't been processed and isn't currently streaming
+          if (item.formatted.audio?.length && 
+              !item.formatted.file && 
+              !processingAudioRef.current[item.id] &&
+              !streamingAudioRef.current[item.id]) {
+            processingAudioRef.current[item.id] = true;
+            streamingAudioRef.current[item.id] = true;
+            
             WavRecorder.decode(item.formatted.audio, 24000, 24000)
               .then(wavFile => {
-                item.formatted.file = wavFile;
-                if (isVoiceChatMode && shouldPlayAudio) {
-                  newMessagesRef.current.add(item.id);
+                if (streamingAudioRef.current[item.id]) {
+                  delete processingAudioRef.current[item.id];
+                  return;
                 }
+                item.formatted.file = wavFile;
                 setItems([...items]);
               })
-              .catch(error => console.error('Error processing audio:', error));
+              .catch(error => {
+                console.error('Error processing audio:', error);
+                delete processingAudioRef.current[item.id];
+              });
           }
         }
       }
@@ -325,7 +686,10 @@ export function MobileConsolePage() {
         }
       }
 
-      setItems([...items]);
+      // 只有在有效内容时才更新items
+      if (items.length > 0) {
+        setItems([...items]);
+      }
     }
 
     client.on('conversation.updated', handleConversationUpdate);
@@ -337,20 +701,25 @@ export function MobileConsolePage() {
         console.warn('Error removing event listener:', error);
       }
     };
-  }, [isVoiceChatMode, shouldPlayAudio]);
+  }, [isVoiceChatMode, shouldPlayAudio]);  // 添加 shouldPlayAudio 依赖
 
-  // Add cleanup effect
+  // Add this event handler for conversation interruption
   useEffect(() => {
+    const client = clientRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
+
+    client.on('conversation.interrupted', async () => {
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
+      }
+    });
+
     return () => {
-      // Cleanup function to stop all audio when component unmounts
-      // or when voice chat mode changes
-      const audios = document.getElementsByTagName('audio');
-      Array.from(audios).forEach(audio => {
-        audio.pause();
-        audio.currentTime = 0;
-      });
+      client.off('conversation.interrupted');
     };
-  }, [isVoiceChatMode]);
+  }, []);
 
   // Mobile-optimized UI
   return (
@@ -379,45 +748,59 @@ export function MobileConsolePage() {
             <div className="message-content">
               {item.role === 'assistant' ? (
                 <>
-                  {item.formatted.text && (
-                    <div className="text-content">
-                      <ReactMarkdown>
-                        {item.formatted.text}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                  {item.formatted.file && shouldPlayAudio && isVoiceChatMode && newMessagesRef.current.has(item.id) && (
+                  <div className="text-content">
+                    <ReactMarkdown
+                      components={{
+                        img: ({ src, alt }) => (
+                          <img
+                            src={src}
+                            alt={alt}
+                            onClick={(e) => handleImageClick(e, src || '')}
+                            style={{ cursor: 'pointer', maxWidth: '100%' }}
+                          />
+                        ),
+                        a: ({ href, children }) => (
+                          <a
+                            href={href}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (href?.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+                                setPreviewImage(href);
+                              } else {
+                                window.open(href, '_blank');
+                              }
+                            }}
+                          >
+                            {children}
+                          </a>
+                        ),
+                      }}
+                    >
+                      {item.formatted.transcript ||
+                        item.formatted.text ||
+                        '(truncated)'}
+                    </ReactMarkdown>
+                  </div>
+                  {item.formatted.file && (
                     <div className="audio-content">
-                      <audio 
-                        ref={(audio) => {
-                          if (audio) {
-                            if (!isVoiceChatMode || !shouldPlayAudio) {
-                              audio.pause();
-                              audio.currentTime = 0;
-                            }
-                          }
-                        }}
+                      <audio
                         src={item.formatted.file.url}
+                        controls={false}
                         autoPlay={true}
                         onPlay={() => {
-                          console.log('Playing new message audio:', item.id);
+                          console.log('Audio started playing:', item.id);
+                          wavStreamPlayerRef.current.interrupt();
                         }}
-                        onEnded={() => {
-                          console.log('Audio finished:', item.id);
-                          newMessagesRef.current.delete(item.id);
-                          // Force re-render to remove audio element
-                          setItems(prevItems => [...prevItems]);
-                        }}
-                        preload="auto"
-                        controls={false}
                       />
                     </div>
                   )}
                 </>
               ) : (
-                <div className="text-content">
-                  {item.formatted.transcript || item.formatted.text || ''}
-                </div>
+                !isVoiceChatMode && (
+                  <div className="text-content">
+                    {item.formatted.transcript || item.formatted.text || ''}
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -428,6 +811,27 @@ export function MobileConsolePage() {
           </div>
         )} */}
       </main>
+
+      {/* 添加图片预览模态窗口 */}
+      {previewImage && (
+        <div 
+          className="image-preview-modal"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div 
+            className="preview-content"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button 
+              className="close-preview"
+              onClick={() => setPreviewImage(null)}
+            >
+              <X size={24} />
+            </button>
+            <img src={previewImage} alt="Preview" />
+          </div>
+        </div>
+      )}
 
       {isVoiceChatMode ? (
         <div className="voice-mode-container">

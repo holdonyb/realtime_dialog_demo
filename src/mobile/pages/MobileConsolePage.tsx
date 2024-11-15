@@ -192,6 +192,7 @@ export function MobileConsolePage() {
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
   const [shouldPlayAudio, setShouldPlayAudio] = useState(true);
 //   const [currentTranscript, setCurrentTranscript] = useState('');
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   // Add ref for chat container
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -563,12 +564,13 @@ export function MobileConsolePage() {
     
     try {
       // Stop any ongoing recordings or playback
-      if (isRecording) {
-        await wavRecorder.pause();
+      if (wavRecorder.getStatus() !== 'ended') {
+        if (isRecording) {
+          await wavRecorder.pause();
+        }
+        await wavRecorder.end();
       }
       
-      // 确保 WavRecorder 完全结束当前会话
-      await wavRecorder.end();
       await wavStreamPlayer.interrupt();
       
       // Reset all states
@@ -588,14 +590,20 @@ export function MobileConsolePage() {
       // Reset client
       client.reset();
       
-      // 添加一个小延迟确保所有资源都被正确释放
+      // Add a small delay to ensure all resources are properly released
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      // 重新连接
+      // Reconnect
       await connectConversation();
       
     } catch (error) {
       console.error('Error resetting conversation:', error);
+      // Even if there's an error, try to reconnect
+      try {
+        await connectConversation();
+      } catch (reconnectError) {
+        console.error('Error reconnecting:', reconnectError);
+      }
     }
   };
 
@@ -606,7 +614,11 @@ export function MobileConsolePage() {
     }
   };
 
-  
+  // 添加图片点击处理函数
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>, src: string) => {
+    e.preventDefault();
+    setPreviewImage(src);
+  };
 
   // Set up event listeners and tools
   useEffect(() => {
@@ -619,10 +631,19 @@ export function MobileConsolePage() {
     });
 
     function handleConversationUpdate({ item, delta }: any) {
-      const items = client.conversation.getItems();
+      const items = client.conversation.getItems().filter(item => {
+        // 过滤掉空消息
+        if (item.role === 'user') {
+          return item.formatted.text || item.formatted.transcript;
+        }
+        if (item.role === 'assistant') {
+          return (item.formatted.text || item.formatted.transcript || item.formatted.audio?.length);
+        }
+        return false;
+      });
       
       // Handle audio streaming
-      if (delta?.audio && shouldPlayAudio) {  // 添加 shouldPlayAudio 检查
+      if (delta?.audio && shouldPlayAudio) {
         wavStreamPlayer.add16BitPCM(delta.audio, item.id);
         streamingAudioRef.current[item.id] = true;
       }
@@ -630,16 +651,14 @@ export function MobileConsolePage() {
       // Handle assistant messages
       if (item.role === 'assistant') {
         if (item.status === 'completed' && 
-            (item.formatted.text || item.formatted.transcript)) {
+            (item.formatted.text || item.formatted.transcript || item.formatted.audio?.length)) {
           // Update text content
           if (!item.formatted.text && item.formatted.transcript) {
             item.formatted.text = item.formatted.transcript;
           }
           
           // Only update items if there's content
-          if (item.formatted.text || item.formatted.audio?.length) {
-            setItems([...items]);
-          }
+          setItems([...items]);
 
           // Only process audio if it hasn't been processed and isn't currently streaming
           if (item.formatted.audio?.length && 
@@ -647,11 +666,10 @@ export function MobileConsolePage() {
               !processingAudioRef.current[item.id] &&
               !streamingAudioRef.current[item.id]) {
             processingAudioRef.current[item.id] = true;
-            streamingAudioRef.current[item.id] = true; // Mark as streaming
+            streamingAudioRef.current[item.id] = true;
             
             WavRecorder.decode(item.formatted.audio, 24000, 24000)
               .then(wavFile => {
-                // Skip file creation if we've already streamed the audio
                 if (streamingAudioRef.current[item.id]) {
                   delete processingAudioRef.current[item.id];
                   return;
@@ -675,7 +693,10 @@ export function MobileConsolePage() {
         }
       }
 
-      setItems([...items]);
+      // 只有在有效内容时才更新items
+      if (items.length > 0) {
+        setItems([...items]);
+      }
     }
 
     client.on('conversation.updated', handleConversationUpdate);
@@ -735,7 +756,33 @@ export function MobileConsolePage() {
               {item.role === 'assistant' ? (
                 <>
                   <div className="text-content">
-                    <ReactMarkdown>
+                    <ReactMarkdown
+                      components={{
+                        img: ({ src, alt }) => (
+                          <img
+                            src={src}
+                            alt={alt}
+                            onClick={(e) => handleImageClick(e, src || '')}
+                            style={{ cursor: 'pointer', maxWidth: '100%' }}
+                          />
+                        ),
+                        a: ({ href, children }) => (
+                          <a
+                            href={href}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (href?.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+                                setPreviewImage(href);
+                              } else {
+                                window.open(href, '_blank');
+                              }
+                            }}
+                          >
+                            {children}
+                          </a>
+                        ),
+                      }}
+                    >
                       {item.formatted.transcript ||
                         item.formatted.text ||
                         '(truncated)'}
@@ -771,6 +818,27 @@ export function MobileConsolePage() {
           </div>
         )} */}
       </main>
+
+      {/* 添加图片预览模态窗口 */}
+      {previewImage && (
+        <div 
+          className="image-preview-modal"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div 
+            className="preview-content"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button 
+              className="close-preview"
+              onClick={() => setPreviewImage(null)}
+            >
+              <X size={24} />
+            </button>
+            <img src={previewImage} alt="Preview" />
+          </div>
+        </div>
+      )}
 
       {isVoiceChatMode ? (
         <div className="voice-mode-container">
