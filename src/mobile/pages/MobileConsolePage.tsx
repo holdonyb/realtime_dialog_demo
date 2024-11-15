@@ -362,7 +362,7 @@ export function MobileConsolePage() {
 
             const result: ClassHomework[] = await response.json();
             
-            // 格式化日期和添加统计信息
+            // 格式化日期添加统计信息
             const formattedHomeworks = result.map(homework => ({
               ...homework,
               create_time: new Date(homework.create_time).toLocaleDateString(),
@@ -463,6 +463,7 @@ export function MobileConsolePage() {
     if (userInput.trim() === '') return;
 
     const client = clientRef.current;
+    const wavStreamPlayer = wavStreamPlayerRef.current;
     
     try {
       if (!isConnected) {
@@ -471,6 +472,13 @@ export function MobileConsolePage() {
 
       if (!client.isConnected()) {
         await client.connect();
+      }
+
+      // 中断当前正在播放的音频
+      const trackSampleOffset = await wavStreamPlayer.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
       }
 
       client.sendUserMessageContent([{
@@ -557,8 +565,10 @@ export function MobileConsolePage() {
       // Stop any ongoing recordings or playback
       if (isRecording) {
         await wavRecorder.pause();
-        await wavRecorder.end();
       }
+      
+      // 确保 WavRecorder 完全结束当前会话
+      await wavRecorder.end();
       await wavStreamPlayer.interrupt();
       
       // Reset all states
@@ -575,8 +585,13 @@ export function MobileConsolePage() {
       audioPlayedRef.current = {};
       streamingAudioRef.current = {};
       
-      // Reset client and reconnect
+      // Reset client
       client.reset();
+      
+      // 添加一个小延迟确保所有资源都被正确释放
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // 重新连接
       await connectConversation();
       
     } catch (error) {
@@ -607,8 +622,9 @@ export function MobileConsolePage() {
       const items = client.conversation.getItems();
       
       // Handle audio streaming
-      if (delta?.audio) {
+      if (delta?.audio && shouldPlayAudio) {  // 添加 shouldPlayAudio 检查
         wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+        streamingAudioRef.current[item.id] = true;
       }
 
       // Handle assistant messages
@@ -671,7 +687,7 @@ export function MobileConsolePage() {
         console.warn('Error removing event listener:', error);
       }
     };
-  }, [isVoiceChatMode]);
+  }, [isVoiceChatMode, shouldPlayAudio]);  // 添加 shouldPlayAudio 依赖
 
   // Add this event handler for conversation interruption
   useEffect(() => {
