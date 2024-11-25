@@ -100,6 +100,31 @@ interface ClassHomework {
   isview: number;
 }
 
+// 添加新的接口定义
+interface StudentAssignment {
+  assignment_id: number;
+  user_id: number;
+  class_id: number;
+  score: number;
+  assignment_name: string;
+}
+
+interface ClassStudent {
+  class_id: number;
+  class_name: string;
+  grade_id: number;
+  student_list: (any | null)[];
+}
+
+interface TeacherAllHomeworksResponse {
+  data: {
+    studentAssignmentList: StudentAssignment[];
+    classStudentList: ClassStudent[];
+  };
+  code: number;
+  msg: string;
+}
+
 // 定义工具
 const teacherClassesTool = {
   name: 'get_teacher_classes',
@@ -169,6 +194,22 @@ const getClassHomeworksTool = {
       },
     },
     required: ['student_id', 'class_name'],
+  },
+};
+
+// 添加新的工具定义
+const teacherAllHomeworksTool = {
+  name: 'get_teacher_all_homeworks',
+  description: 'Retrieves all homework assignments and class student lists for a given teacher. The teacher_id should be extracted from the conversation context.',
+  parameters: {
+    type: 'object',
+    properties: {
+      teacher_id: {
+        type: 'number',
+        description: 'The numeric identifier of the teacher',
+      },
+    },
+    required: ['teacher_id'],
   },
 };
 
@@ -384,6 +425,56 @@ export function MobileConsolePage() {
               error: error instanceof Error ? 
                 error.message : 
                 'Unable to retrieve class homeworks at this time'
+            };
+          }
+        }
+      );
+
+      // 添加获取所有作业的工具
+      client.addTool(
+        teacherAllHomeworksTool,
+        async (params: { teacher_id: number }) => {
+          try {
+            const response = await fetch('/api/open/get_teacher_all_homeworks', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ 
+                teacher_id: params.teacher_id 
+              }),
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('API Error Response:', errorText);
+              throw new Error(`Failed to fetch teacher all homeworks: ${response.status}`);
+            }
+
+            const result: TeacherAllHomeworksResponse = await response.json();
+            
+            if (result.code !== 0) {
+              throw new Error(`API Error: ${result.msg}`);
+            }
+
+            // 添加一些统计信息以便更好地展示数据
+            const summary = {
+              total_assignments: result.data.studentAssignmentList.length,
+              unique_assignments: new Set(result.data.studentAssignmentList.map(a => a.assignment_id)).size,
+              total_classes: result.data.classStudentList.length,
+              assignments: result.data.studentAssignmentList,
+              classes: result.data.classStudentList,
+              summary: `Found ${result.data.studentAssignmentList.length} homework submissions across ${result.data.classStudentList.length} classes.`
+            };
+
+            console.log('All homeworks retrieved successfully:', summary);
+            return summary;
+          } catch (error) {
+            console.error('Error fetching all homeworks:', error);
+            return { 
+              error: error instanceof Error ? 
+                error.message : 
+                'Unable to retrieve all homeworks at this time'
             };
           }
         }
