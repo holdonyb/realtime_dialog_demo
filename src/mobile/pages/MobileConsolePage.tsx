@@ -7,6 +7,7 @@ import { WavRenderer } from '../../utils/wav_renderer';
 import { X, Edit, Zap, Mic, Send } from 'react-feather';
 import ReactMarkdown from 'react-markdown';
 import './MobileConsolePage.scss';
+import { userContext } from '../../utils/user_context';
 
 const LOCAL_RELAY_SERVER_URL = process.env.REACT_APP_RELAY_SERVER_URL || '';
 
@@ -817,6 +818,28 @@ export function MobileConsolePage() {
     return () => {
       client.off('conversation.interrupted');
     };
+  }, []);
+
+  // 在组件挂载时设置用户上下文
+  useEffect(() => {
+    // 这里应该是从登录系统或API获取用户信息
+    // 现在我们使用一个模拟的API调用
+    const fetchUserContext = async () => {
+      try {
+        // 模拟从API获取用户信息
+        // 实际使用时替换为真实的API调用
+        const response = await fetch('/api/user/context');
+        const userData = await response.json();
+        userContext.setContext({
+          teacher_id: userData.teacher_id,
+          // 其他用户信息...
+        });
+      } catch (error) {
+        console.error('Error fetching user context:', error);
+      }
+    };
+
+    fetchUserContext();
   }, []);
 
   // Mobile-optimized UI
